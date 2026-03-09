@@ -13,6 +13,7 @@ from .cloudbet_client import CloudbetClient
 TOTAL_MARKET_KEYS = ("soccer.total_goals", "soccer.totalGoals", "soccer.totals")
 TRADING_MARKERS = ("TRADING", "OPEN", "ACTIVE")
 NON_TRADING_MARKERS = ("SUSPENDED", "CLOSED", "SETTLED", "CANCELLED")
+FINISHED_MARKERS = ("SETTLED", "CLOSED", "CANCELLED", "RESULTED")
 ALLOWED_SCORE_SET = {(0, 0), (1, 0), (0, 1)}
 
 
@@ -78,6 +79,8 @@ class LiveSignalRecord:
     signal: str
     signal_time: datetime
     match_id: str
+    home_team: str
+    away_team: str
     minute: int | None
     score_home: int | None
     score_away: int | None
@@ -321,7 +324,7 @@ def _main_total_market_for_event(event: dict[str, Any]) -> MainTotalMarket | Non
 
     if not candidates:
         return None
-    candidates.sort(key=lambda row: (row[0], row[1], abs(row[2].main_total_line)))
+    candidates.sort(key=lambda row: (row[0], row[1], abs(row[2].main_total_line - 2.0)))
     return candidates[0][2]
 
 
@@ -582,6 +585,9 @@ class LiveLayerTwoMonitor:
 
         for match_id, watch in self.watchlist.items():
             tracking = self.states.setdefault(match_id, MatchTrackingState())
+            if tracking.state == "FINISHED":
+                continue
+
             try:
                 event = self.client.get_event_odds(match_id, self.config.markets)
             except Exception:
@@ -594,6 +600,11 @@ class LiveLayerTwoMonitor:
                 continue
 
             self._update_tracking(tracking, market, now)
+
+            if any(m in market.market_status.upper() for m in FINISHED_MARKERS):
+                tracking.state = "FINISHED"
+                continue
+
             if round(market.main_total_line, 2) != round(self.config.trigger_total_line, 2):
                 tracking.state = "WATCHING"
                 continue
@@ -709,10 +720,19 @@ class LiveLayerTwoMonitor:
         confidence = _confidence_from_quality(quality_score)
         signal = "TG125_LATE_FAVORITE_SIGNAL" if signal_status == "qualified" else "TG125_LATE_FAVORITE_WATCH"
 
+        if signal_status == "qualified":
+            action = "candidate_only"
+        elif signal_status in ("triggered", "cooling"):
+            action = "monitoring"
+        else:
+            action = "rejected"
+
         return LiveSignalRecord(
             signal=signal,
             signal_time=now,
             match_id=watch.match_id,
+            home_team=watch.home_team,
+            away_team=watch.away_team,
             minute=game_state.minute,
             score_home=game_state.score_home,
             score_away=game_state.score_away,
@@ -730,7 +750,7 @@ class LiveLayerTwoMonitor:
             reject_reason=reject_reason,
             quality_score=quality_score,
             confidence=confidence,
-            action="candidate_only",
+            action=action,
             fav_odds_pre=watch.fav_odds_pre,
             dog_odds_pre=watch.dog_odds_pre,
         )
