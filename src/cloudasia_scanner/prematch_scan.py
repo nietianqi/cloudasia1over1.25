@@ -346,6 +346,7 @@ class PreMatchScanner:
                 records.append(
                     PreMatchWatchRecord(
                         match_id=_extract_event_id(event),
+                        competition_key=competition_key,
                         home_team=home_team,
                         away_team=away_team,
                         league=event_league,

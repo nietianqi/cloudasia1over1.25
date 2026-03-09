@@ -7,6 +7,7 @@ from datetime import datetime
 @dataclass(slots=True)
 class PreMatchWatchRecord:
     match_id: str
+    competition_key: str
     home_team: str
     away_team: str
     league: str

@@ -20,6 +20,24 @@
   - `fav_odds`, `dog_odds`, `pre_match_bucket`
   - `watchlist_flag=true`, `strategy_tag=PRE_FAVORITE_DEEP_AH`
 
+## 当前实现（第二层滚球监控 v1）
+
+- 只监控第一层输出的候选池（`watchlist_flag=true`）。
+- 主 `Total Goals` 盘口触发：`main_total_line == 1.25`。
+- 状态机：`WATCHING -> TRIGGERED -> COOLING/QUALIFIED/REJECTED`。
+- 默认过滤：
+  - 时间窗口 `55~72` 分钟
+  - 比分限定 `{0:0, 1:0, 0:1}`
+  - 双方红牌必须为 `0`
+  - 市场需为可交易状态
+  - 恢复交易后至少 `20s`
+  - 最近 60s 盘口跳线不超过 1 次
+  - 最近 60s 赔率跳动不超过 3 次
+  - `Over 1.25` 赔率至少 `1.80`
+- 信号：
+  - `TG125_LATE_FAVORITE_SIGNAL`（通过过滤）
+  - `TG125_LATE_FAVORITE_WATCH`（触发但仍在冷却或被过滤）
+
 ## 安装
 
 ```bash
@@ -60,6 +78,29 @@ cloudasia-scan --once
 ```bash
 cloudasia-scan --once --output data/watchlist.jsonl
 ```
+
+## 第二层：单次监控（基于 watchlist）
+
+```bash
+cloudasia-live-monitor \
+  --watchlist data/watchlist.jsonl \
+  --once \
+  --api-key <YOUR_CLOUDBET_API_KEY>
+```
+
+## 第二层：持续监控
+
+```bash
+cloudasia-live-monitor \
+  --watchlist data/watchlist.jsonl \
+  --output data/live_signals.jsonl \
+  --api-key <YOUR_CLOUDBET_API_KEY>
+```
+
+监控会自动切换轮询频率：
+
+- 普通阶段：15s
+- 接近触发（主总盘 <= 1.75）：5s
 
 ## 说明
 

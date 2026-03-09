@@ -58,3 +58,39 @@ class CloudbetClient:
     def get_competition_odds(self, competition_key: str, markets: list[str]) -> dict[str, Any]:
         params = {"markets": markets}
         return self._get_json(f"/competitions/{competition_key}", params=params)
+
+    def get_event_odds(self, event_id: str, markets: list[str]) -> dict[str, Any]:
+        params = {"markets": markets}
+        payload = self._get_json(f"/events/{event_id}", params=params)
+        event = self._extract_event_payload(payload)
+        if event is None:
+            raise ValueError(f"Cloudbet event payload not found for event_id={event_id}")
+        return event
+
+    @staticmethod
+    def _extract_event_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+        direct_event = payload.get("event")
+        if isinstance(direct_event, dict):
+            return direct_event
+
+        if "markets" in payload and any(k in payload for k in ("id", "key", "eventId", "event_id")):
+            return payload
+
+        events = payload.get("events")
+        if isinstance(events, list) and events:
+            first = events[0]
+            if isinstance(first, dict):
+                return first
+
+        competitions = payload.get("competitions")
+        if isinstance(competitions, list):
+            for comp in competitions:
+                if not isinstance(comp, dict):
+                    continue
+                comp_events = comp.get("events")
+                if isinstance(comp_events, list) and comp_events:
+                    first = comp_events[0]
+                    if isinstance(first, dict):
+                        return first
+
+        return None
