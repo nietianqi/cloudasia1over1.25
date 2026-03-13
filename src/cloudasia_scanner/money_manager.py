@@ -11,6 +11,10 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _utc_today() -> date:
+    return _utc_now().date()
+
+
 def _parse_utc_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -63,7 +67,7 @@ class MoneyManager:
     _open_exposure: float = field(default=0.0, init=False)
     _daily_pnl: float = field(default=0.0, init=False)
     _day_start_bankroll: float = field(init=False)
-    _today: date = field(default_factory=date.today, init=False)
+    _today: date = field(default_factory=_utc_today, init=False)
     _daily_bet_count: int = field(default=0, init=False)
     _consecutive_losses: int = field(default=0, init=False)
     _last_bet_time: datetime | None = field(default=None, init=False)
@@ -248,7 +252,7 @@ class MoneyManager:
         self._peak_bankroll = float(state.get("peak_bankroll", self._bankroll))
         self._open_exposure = float(state.get("open_exposure", 0.0))
 
-        today = date.today()
+        today = _utc_today()
         saved_today = state.get("today")
         if saved_today == today.isoformat():
             self._daily_pnl = float(state.get("daily_pnl", 0.0))

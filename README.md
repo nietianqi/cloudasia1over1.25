@@ -45,14 +45,14 @@ enabled = true
 dry_run = false
 require_live_ack = true
 live_ack_phrase = "LIVE_BETTING_ACK"
-live_ack_token = ""
+live_ack_token = "LIVE_BETTING_ACK"
 ```
 
-When `dry_run=false`, bets are still blocked until:
+When `dry_run=false`, real bets are allowed only if:
 
 `live_ack_token == live_ack_phrase`
 
-This prevents accidental live betting.
+To lock live betting again, set `live_ack_token = ""`.
 
 ## Bankroll Management (Configurable)
 
@@ -68,6 +68,15 @@ Configured in `[money]`:
 - Reserve bankroll percent
 
 Stake can be `0` when edge is insufficient (no forced low-quality bets).
+
+`config.toml` defaults are now a conservative production profile:
+
+- 15% fractional Kelly
+- 20% reserve bankroll
+- 2% max stake per bet, 25 USDT hard cap
+- 4% daily loss stop, 12% max drawdown stop
+- 8% max concurrent exposure
+- max 3 consecutive losses, max 8 bets/day, 60s cooldown
 
 ## Output Files
 

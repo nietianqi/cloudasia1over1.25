@@ -50,38 +50,38 @@ dry_run = false
 stake_per_bet = 10.0
 currency = "USDT"
 min_accepted_price = 1.78
-max_active_bets = 5
+max_active_bets = 3
 
 # Safety gate: live betting is blocked unless token equals phrase.
 require_live_ack = true
 live_ack_phrase = "LIVE_BETTING_ACK"
-live_ack_token = ""
+live_ack_token = "LIVE_BETTING_ACK"
 
 [money]
 initial_bankroll = 500.0
 
-# Kelly
-kelly_fraction = 0.25
+# Kelly (conservative production profile)
+kelly_fraction = 0.15
 base_win_rate = 0.55
 min_win_rate = 0.50
 max_win_rate = 0.70
 quality_adjustment = 0.07
-min_kelly_edge = 0.00
+min_kelly_edge = 0.01
 
 # Stake controls
-reserve_bankroll_pct = 0.00
-max_stake_pct = 0.05
+reserve_bankroll_pct = 0.20
+max_stake_pct = 0.02
 min_stake = 5.0
-max_stake = 50.0
+max_stake = 25.0
 force_min_stake = false
 
 # Risk controls
-daily_loss_limit_pct = 0.10
-max_drawdown_pct = 0.20
-max_concurrent_exposure_pct = 0.25
-max_consecutive_losses = 5
-max_daily_bets = 20
-bet_cooldown_seconds = 15
+daily_loss_limit_pct = 0.04
+max_drawdown_pct = 0.12
+max_concurrent_exposure_pct = 0.08
+max_consecutive_losses = 3
+max_daily_bets = 8
+bet_cooldown_seconds = 60
 
 auto_settle_after_minutes = 130
 bankroll_file = "data/bankroll.json"
