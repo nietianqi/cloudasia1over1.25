@@ -6,3 +6,8 @@ __pycache__/
 venv/
 dist/
 build/
+.idea/
+.claude/
+data/
+config.local.toml
+uv.lock

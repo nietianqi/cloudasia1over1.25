@@ -171,11 +171,21 @@ def _build_money_manager(config: dict[str, Any], base_dir: Path) -> MoneyManager
         initial_bankroll=as_float(section.get("initial_bankroll"), 500.0),
         kelly_fraction=as_float(section.get("kelly_fraction"), 0.25),
         base_win_rate=as_float(section.get("base_win_rate"), 0.55),
+        min_win_rate=as_float(section.get("min_win_rate"), 0.50),
+        max_win_rate=as_float(section.get("max_win_rate"), 0.70),
+        quality_adjustment=as_float(section.get("quality_adjustment"), 0.07),
+        min_kelly_edge=as_float(section.get("min_kelly_edge"), 0.0),
+        reserve_bankroll_pct=as_float(section.get("reserve_bankroll_pct"), 0.0),
         max_stake_pct=as_float(section.get("max_stake_pct"), 0.05),
         min_stake=as_float(section.get("min_stake"), 5.0),
         max_stake=as_float(section.get("max_stake"), 50.0),
+        force_min_stake=as_bool(section.get("force_min_stake"), False),
         daily_loss_limit_pct=as_float(section.get("daily_loss_limit_pct"), 0.10),
+        max_drawdown_pct=as_float(section.get("max_drawdown_pct"), 0.20),
         max_concurrent_exposure_pct=as_float(section.get("max_concurrent_exposure_pct"), 0.25),
+        max_consecutive_losses=as_int(section.get("max_consecutive_losses"), 5),
+        max_daily_bets=as_int(section.get("max_daily_bets"), 20),
+        bet_cooldown_seconds=as_int(section.get("bet_cooldown_seconds"), 15),
         bankroll_file=bankroll_file,
         auto_settle_after_minutes=as_int(section.get("auto_settle_after_minutes"), 130),
     )
@@ -187,6 +197,9 @@ def _build_bet_client(config: dict[str, Any], api_key: str | None) -> BetClient:
     bet_config = BetConfig(
         enabled=as_bool(section.get("enabled"), True),
         dry_run=as_bool(section.get("dry_run"), True),
+        require_live_ack=as_bool(section.get("require_live_ack"), True),
+        live_ack_phrase=str(section.get("live_ack_phrase", "LIVE_BETTING_ACK")),
+        live_ack_token=str(section.get("live_ack_token", "")),
         stake_per_bet=as_float(section.get("stake_per_bet"), 10.0),
         currency=str(section.get("currency", "USDT")),
         min_accepted_price=as_float(section.get("min_accepted_price"), 1.78),
@@ -210,6 +223,14 @@ def _run_pipeline_continuous(config: dict[str, Any], base_dir: Path, client: Clo
         persist_watchlist=as_bool(pipeline_section.get("persist_watchlist"), True),
         persist_signals=as_bool(pipeline_section.get("persist_signals"), True),
         persist_bets=as_bool(pipeline_section.get("persist_bets"), True),
+        finished_cleanup_interval_seconds=as_int(
+            pipeline_section.get("finished_cleanup_interval_seconds"),
+            300,
+        ),
+        settlement_check_interval_seconds=as_int(
+            pipeline_section.get("settlement_check_interval_seconds"),
+            300,
+        ),
     )
 
     scanner = _build_scanner(config, client)

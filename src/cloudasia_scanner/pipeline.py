@@ -167,9 +167,16 @@ class PipelineRunner:
 
             # ── Kelly stake sizing ────────────────────────────────────────────
             kelly_stake = self.money_manager.compute_stake(sig.over_odds, sig.quality_score)
+            if kelly_stake <= 0:
+                print(
+                    f"[{_ts()}] [BET SKIP] no positive edge  match={sig.match_id}"
+                    f" odds={sig.over_odds:.3f} quality={sig.quality_score:.1f}",
+                    flush=True,
+                )
+                continue
 
             # ── Bankroll / daily-loss / exposure guards ───────────────────────
-            ok, reason = self.money_manager.can_bet(kelly_stake)
+            ok, reason = self.money_manager.can_bet(kelly_stake, now_utc=now)
             if not ok:
                 print(
                     f"[{_ts()}] [BET BLOCK] {reason}  match={sig.match_id}",
@@ -261,6 +268,7 @@ class PipelineRunner:
                 won=won,
                 accepted_odds=accepted_odds or bet.accepted_price,
             )
+            self.bet_client.on_bet_settled()
 
             result_tag = "WON" if won else "LOST"
             print(
@@ -277,6 +285,7 @@ class PipelineRunner:
 
     def _should_cleanup(self, now: datetime) -> bool:
         if self._last_cleanup is None:
+            self._last_cleanup = now
             return False
         return (
             (now - self._last_cleanup).total_seconds()

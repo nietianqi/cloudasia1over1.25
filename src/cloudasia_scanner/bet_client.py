@@ -15,10 +15,19 @@ _LOSS_RESULTS = {"LOST", "LOSE", "LOSER", "HALF_LOST"}
 _SETTLED_STATUSES = {"SETTLED", "RESULTED", "CLOSED"}
 
 
+def _status_matches(status: str, markers: set[str]) -> bool:
+    if status in markers:
+        return True
+    return any(status.endswith(f"_{marker}") for marker in markers)
+
+
 @dataclass(slots=True)
 class BetConfig:
     enabled: bool = True
     dry_run: bool = True
+    require_live_ack: bool = True
+    live_ack_phrase: str = "LIVE_BETTING_ACK"
+    live_ack_token: str = ""
     stake_per_bet: float = 10.0
     currency: str = "USDT"
     min_accepted_price: float = 1.78
@@ -60,6 +69,7 @@ class BetClient:
     api_key: str | None
     config: BetConfig = field(default_factory=BetConfig)
     _session: requests.Session = field(default_factory=requests.Session, repr=False)
+    _active_count: int = field(default=0, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.api_key:
@@ -69,6 +79,9 @@ class BetClient:
     @property
     def active_bets_count(self) -> int:
         return self._active_count
+
+    def on_bet_settled(self) -> None:
+        self._active_count = max(0, self._active_count - 1)
 
     def check_bet_status(self, reference_id: str) -> dict[str, Any] | None:
         """Query Cloudbet for the current status of a placed bet.
@@ -104,10 +117,10 @@ class BetClient:
         if raw is None:
             return False, False, None
         status = str(raw.get("status", "")).upper()
-        if not any(s in status for s in _SETTLED_STATUSES):
+        if not _status_matches(status, _SETTLED_STATUSES):
             return False, False, None
         result_raw = str(raw.get("result") or raw.get("outcome") or "").upper()
-        won = any(r in result_raw for r in _WIN_RESULTS)
+        won = _status_matches(result_raw, _WIN_RESULTS)
         raw_price = raw.get("price") or raw.get("acceptedPrice") or raw.get("accepted_price")
         try:
             accepted_odds = float(raw_price) if raw_price is not None else None
@@ -167,6 +180,37 @@ class BetClient:
                 dry_run=self.config.dry_run,
             )
 
+        if (
+            not self.config.dry_run
+            and self.config.require_live_ack
+            and self.config.live_ack_token != self.config.live_ack_phrase
+        ):
+            return BetRecord(
+                match_id=signal.match_id,
+                reference_id=reference_id,
+                event_id=signal.match_id,
+                market_key="soccer.total_goals",
+                selection_key="over",
+                handicap=str(signal.main_total_line),
+                stake=stake,
+                requested_price=signal.over_odds,
+                accepted_price=None,
+                status="SKIPPED_ACK_REQUIRED",
+                rejection_reason=(
+                    "Set betting.live_ack_token to the exact value of "
+                    "betting.live_ack_phrase to enable real-money bets."
+                ),
+                bet_time=now,
+                signal_quality=signal.quality_score,
+                home_team=signal.home_team,
+                away_team=signal.away_team,
+                favorite_side=signal.favorite_side,
+                minute=signal.minute,
+                score_home=signal.score_home,
+                score_away=signal.score_away,
+                dry_run=False,
+            )
+
         if signal.over_odds < self.config.min_accepted_price:
             return BetRecord(
                 match_id=signal.match_id,
@@ -203,6 +247,7 @@ class BetClient:
         }
 
         if self.config.dry_run:
+            self._active_count += 1
             return BetRecord(
                 match_id=signal.match_id,
                 reference_id=reference_id,
@@ -259,6 +304,9 @@ class BetClient:
             accepted_price = float(raw_price) if raw_price is not None else None
         except (TypeError, ValueError):
             accepted_price = None
+
+        if status in ("ACCEPTED", "PENDING"):
+            self._active_count += 1
 
         return BetRecord(
             match_id=signal.match_id,

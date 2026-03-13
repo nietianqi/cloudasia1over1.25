@@ -3,33 +3,28 @@
 mode = "pipeline_continuous"
 
 [cloudbet]
-# 建议写到环境变量 CLOUDBET_API_KEY，也可直接填这里
-api_key = "eyJhbGciOiJSUzI1NiIsImtpZCI6IkhKcDkyNnF3ZXBjNnF3LU9rMk4zV05pXzBrRFd6cEdwTzAxNlRJUjdRWDAiLCJ0eXAiOiJKV1QifQ.eyJhY2Nlc3NfdGllciI6InRyYWRpbmciLCJleHAiOjE5OTYyMzk5ODIsImlhdCI6MTY4MDg3OTk4MiwianRpIjoiNDM2Yzc1NjgtMTM0Ny00MDJhLTg4ZDMtZDlhZmU3OGQ1MDdiIiwic3ViIjoiNDM4MzY1YTUtMzQ0Yi00NTRmLWE5NmQtM2YyMWUzMDc1YmYwIiwidGVuYW50IjoiY2xvdWRiZXQiLCJ1dWlkIjoiNDM4MzY1YTUtMzQ0Yi00NTRmLWE5NmQtM2YyMWUzMDc1YmYwIn0.4eI0AK7z17EyutBgx_0FLUc9r5nWR_oUuiurGPyNlcGSz3853wkipm1ul_-oIlijPbaIha1UoD_2v3u-X48cJsmQglLNyst-2UPie9qQ3t8bzQUlhnHjcye7Kc-msGHNi-ML5twdRI-42sESiAECTccsB6NVebHgCqZfAh9-PVT-Hmao4c9AJiyJ2NA5QOTcBz7BJR06MTC0ZMW5Yklm001eEaDYxpBAorDmvRg5GDldlCBuQfVcvip8Zkp0uPHuAu2TJTJrw7tMYXSn7CUWWlQ_oQ7Alb-AchSOLkk7y-eUfUtu7plYJnj50wBLs-NLBzjnV3ifUhDk0etB9HNebA"
-api_key_env = "eyJhbGciOiJSUzI1NiIsImtpZCI6IkhKcDkyNnF3ZXBjNnF3LU9rMk4zV05pXzBrRFd6cEdwTzAxNlRJUjdRWDAiLCJ0eXAiOiJKV1QifQ.eyJhY2Nlc3NfdGllciI6InRyYWRpbmciLCJleHAiOjE5OTYyMzk5ODIsImlhdCI6MTY4MDg3OTk4MiwianRpIjoiNDM2Yzc1NjgtMTM0Ny00MDJhLTg4ZDMtZDlhZmU3OGQ1MDdiIiwic3ViIjoiNDM4MzY1YTUtMzQ0Yi00NTRmLWE5NmQtM2YyMWUzMDc1YmYwIiwidGVuYW50IjoiY2xvdWRiZXQiLCJ1dWlkIjoiNDM4MzY1YTUtMzQ0Yi00NTRmLWE5NmQtM2YyMWUzMDc1YmYwIn0.4eI0AK7z17EyutBgx_0FLUc9r5nWR_oUuiurGPyNlcGSz3853wkipm1ul_-oIlijPbaIha1UoD_2v3u-X48cJsmQglLNyst-2UPie9qQ3t8bzQUlhnHjcye7Kc-msGHNi-ML5twdRI-42sESiAECTccsB6NVebHgCqZfAh9-PVT-Hmao4c9AJiyJ2NA5QOTcBz7BJR06MTC0ZMW5Yklm001eEaDYxpBAorDmvRg5GDldlCBuQfVcvip8Zkp0uPHuAu2TJTJrw7tMYXSn7CUWWlQ_oQ7Alb-AchSOLkk7y-eUfUtu7plYJnj50wBLs-NLBzjnV3ifUhDk0etB9HNebA"
-
+# Keep api_key empty and use env var in production.
+api_key = ""
+api_key_env = "CLOUDBET_API_KEY"
 api_key_header = "X-API-Key"
 base_url = "https://sports-api.cloudbet.com/pub/v2/odds"
 
 [prematch]
-# true: 扫描一次就退出；false: 按 interval_seconds 循环
 once = true
 interval_seconds = 60
 output = "data/watchlist.jsonl"
-# 诊断时设大窗口（如 120）以确认 API 能返回数据；生产改回 5
-minutes_to_kickoff_max = 120
+minutes_to_kickoff_max = 5
 min_favorite_line_abs = 1.0
 min_favorite_odds = 1.6
-# 开启调试输出；确认正常后改为 false
-verbose = true
+verbose = false
 
 [live]
-# true: 监控一次就退出；false: 持续轮询
 once = true
 watchlist = "data/watchlist.jsonl"
 output = "data/live_signals.jsonl"
 trigger_total_line = 1.25
-primary_minute_start = 50
-primary_minute_end = 90
+primary_minute_start = 55
+primary_minute_end = 72
 allowed_scores = ["0:0", "1:0", "0:1"]
 min_seconds_since_reopen = 20
 max_line_jumps_last_60s = 1
@@ -40,52 +35,53 @@ fast_interval_seconds = 5
 fast_line_threshold = 1.75
 
 [pipeline]
-# 每隔多少秒跑一次赛前扫描
 prematch_interval_seconds = 60
-# 输出目录（watchlist.jsonl / live_signals.jsonl / bet_log.jsonl）
 output_dir = "data"
+persist_watchlist = true
+persist_signals = true
+persist_bets = true
+finished_cleanup_interval_seconds = 300
+settlement_check_interval_seconds = 300
 
 [betting]
-# 主开关：false = 完全不投注
 enabled = true
-# 实盘模式（dry_run = false 表示真实下注）
+# Real-money mode
 dry_run = false
-# stake_per_bet 作为 fallback；正常由 MoneyManager Kelly 公式计算
 stake_per_bet = 10.0
 currency = "USDT"
-# 信号触发后赔率低于此值则放弃（防止滑点）
 min_accepted_price = 1.78
-# 同时最多允许多少笔未结算注单（硬上限）
 max_active_bets = 5
 
+# Safety gate: live betting is blocked unless token equals phrase.
+require_live_ack = true
+live_ack_phrase = "LIVE_BETTING_ACK"
+live_ack_token = ""
+
 [money]
-# ── 初始资金 ──────────────────────────────────────────────────────────────────
-# 首次运行时的本金（USDT）；data/bankroll.json 存在时以持久化余额为准
 initial_bankroll = 500.0
 
-# ── Kelly 参数 ────────────────────────────────────────────────────────────────
-# Kelly 分数（0.25 = 四分之一 Kelly，兼顾增长与风险控制）
+# Kelly
 kelly_fraction = 0.25
-# 策略基础胜率保守估计（TG1.25 晚场强队无进球信号）
 base_win_rate = 0.55
+min_win_rate = 0.50
+max_win_rate = 0.70
+quality_adjustment = 0.07
+min_kelly_edge = 0.00
 
-# ── 单注上下限 ────────────────────────────────────────────────────────────────
-# 单注不超过当前资金的 5%
+# Stake controls
+reserve_bankroll_pct = 0.00
 max_stake_pct = 0.05
-# 单注最低金额（USDT）
 min_stake = 5.0
-# 单注硬上限（USDT）
 max_stake = 50.0
+force_min_stake = false
 
-# ── 风控止损 ──────────────────────────────────────────────────────────────────
-# 当日亏损超过开盘资金 10% 时停止当天下注
+# Risk controls
 daily_loss_limit_pct = 0.10
-# 未结算注单总敞口不超过资金的 25%
+max_drawdown_pct = 0.20
 max_concurrent_exposure_pct = 0.25
+max_consecutive_losses = 5
+max_daily_bets = 20
+bet_cooldown_seconds = 15
 
-# ── 结算轮询 ──────────────────────────────────────────────────────────────────
-# 下注后超过此分钟数调用 Cloudbet API 确认结果
 auto_settle_after_minutes = 130
-
-# 资金状态持久化文件（跨进程重启后恢复余额）
 bankroll_file = "data/bankroll.json"
