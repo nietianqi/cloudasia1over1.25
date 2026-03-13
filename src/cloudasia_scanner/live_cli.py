@@ -6,9 +6,13 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+import sys
 
-from .cloudbet_client import SPORTS_ODDS_BASE_URL, CloudbetClient
-from .live_monitor import LiveLayerTwoMonitor, LiveMonitorConfig, load_watchlist
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from cloudasia_scanner.cloudbet_client import SPORTS_ODDS_BASE_URL, CloudbetClient
+from cloudasia_scanner.live_monitor import LiveLayerTwoMonitor, LiveMonitorConfig, load_watchlist
 
 
 def _build_parser() -> argparse.ArgumentParser:

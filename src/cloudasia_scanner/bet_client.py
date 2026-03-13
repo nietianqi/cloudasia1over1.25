@@ -9,6 +9,11 @@ import requests
 
 BETTING_BASE_URL = "https://sports-api.cloudbet.com/pub/v2/betting"
 
+# Cloudbet bet result values returned in settled bets
+_WIN_RESULTS = {"WON", "WIN", "WINNER", "HALF_WON"}
+_LOSS_RESULTS = {"LOST", "LOSE", "LOSER", "HALF_LOST"}
+_SETTLED_STATUSES = {"SETTLED", "RESULTED", "CLOSED"}
+
 
 @dataclass(slots=True)
 class BetConfig:
@@ -65,6 +70,51 @@ class BetClient:
     def active_bets_count(self) -> int:
         return self._active_count
 
+    def check_bet_status(self, reference_id: str) -> dict[str, Any] | None:
+        """Query Cloudbet for the current status of a placed bet.
+
+        Returns the raw API response dict, or None on any error.
+        Fields of interest: status, result/outcome, price (accepted odds).
+        """
+        url = f"{self.config.betting_base_url.rstrip('/')}/bets"
+        try:
+            resp = self._session.get(url, params={"referenceId": reference_id}, timeout=10.0)
+            if resp.status_code in (401, 403, 404):
+                return None
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception:
+            return None
+        if isinstance(data, list) and data:
+            return data[0] if isinstance(data[0], dict) else None
+        if isinstance(data, dict):
+            # might be wrapped: {"bets": [...]}
+            bets = data.get("bets")
+            if isinstance(bets, list) and bets:
+                return bets[0] if isinstance(bets[0], dict) else None
+            return data
+        return None
+
+    def is_bet_settled(self, reference_id: str) -> tuple[bool, bool, float | None]:
+        """Check if a bet is settled. Returns (settled, won, accepted_odds).
+
+        settled=False means still open/pending (or API unavailable).
+        """
+        raw = self.check_bet_status(reference_id)
+        if raw is None:
+            return False, False, None
+        status = str(raw.get("status", "")).upper()
+        if not any(s in status for s in _SETTLED_STATUSES):
+            return False, False, None
+        result_raw = str(raw.get("result") or raw.get("outcome") or "").upper()
+        won = any(r in result_raw for r in _WIN_RESULTS)
+        raw_price = raw.get("price") or raw.get("acceptedPrice") or raw.get("accepted_price")
+        try:
+            accepted_odds = float(raw_price) if raw_price is not None else None
+        except (TypeError, ValueError):
+            accepted_odds = None
+        return True, won, accepted_odds
+
     def _post_bet(self, body: dict[str, Any]) -> dict[str, Any]:
         url = f"{self.config.betting_base_url.rstrip('/')}/place-bet"
         response = self._session.post(url, json=body, timeout=10.0)
@@ -76,8 +126,11 @@ class BetClient:
             raise ValueError(f"Unexpected response from betting API: {data!r}")
         return data
 
-    def place_bet(self, signal: Any) -> BetRecord:
+    def place_bet(self, signal: Any, stake_override: float | None = None) -> BetRecord:
         """Place a bet based on a qualified LiveSignalRecord.
+
+        stake_override — if provided, overrides config.stake_per_bet (used for
+                         Kelly-based dynamic sizing from MoneyManager).
 
         Returns a BetRecord regardless of dry_run. In dry_run mode,
         the bet is logged but no HTTP request is made.
@@ -88,6 +141,7 @@ class BetClient:
 
         now = datetime.now(timezone.utc)
         reference_id = str(uuid.uuid4())
+        stake = stake_override if stake_override is not None else self.config.stake_per_bet
 
         if not self.config.enabled:
             return BetRecord(
@@ -97,7 +151,7 @@ class BetClient:
                 market_key="soccer.total_goals",
                 selection_key="over",
                 handicap=str(signal.main_total_line),
-                stake=self.config.stake_per_bet,
+                stake=stake,
                 requested_price=signal.over_odds,
                 accepted_price=None,
                 status="SKIPPED_DISABLED",
@@ -121,7 +175,7 @@ class BetClient:
                 market_key="soccer.total_goals",
                 selection_key="over",
                 handicap=str(signal.main_total_line),
-                stake=self.config.stake_per_bet,
+                stake=stake,
                 requested_price=signal.over_odds,
                 accepted_price=None,
                 status="SKIPPED_PRICE_TOO_LOW",
@@ -143,7 +197,7 @@ class BetClient:
             "marketKey": "soccer.total_goals",
             "selectionKey": "over",
             "handicap": str(signal.main_total_line),
-            "stake": str(round(self.config.stake_per_bet, 2)),
+            "stake": str(round(stake, 2)),
             "price": str(round(signal.over_odds, 4)),
             "currency": self.config.currency,
         }
@@ -156,7 +210,7 @@ class BetClient:
                 market_key="soccer.total_goals",
                 selection_key="over",
                 handicap=str(signal.main_total_line),
-                stake=self.config.stake_per_bet,
+                stake=stake,
                 requested_price=signal.over_odds,
                 accepted_price=signal.over_odds,
                 status="DRY_RUN",
@@ -182,7 +236,7 @@ class BetClient:
                 market_key="soccer.total_goals",
                 selection_key="over",
                 handicap=str(signal.main_total_line),
-                stake=self.config.stake_per_bet,
+                stake=stake,
                 requested_price=signal.over_odds,
                 accepted_price=None,
                 status="ERROR",
@@ -213,7 +267,7 @@ class BetClient:
             market_key="soccer.total_goals",
             selection_key="over",
             handicap=str(signal.main_total_line),
-            stake=self.config.stake_per_bet,
+            stake=stake,
             requested_price=signal.over_odds,
             accepted_price=accepted_price,
             status=status,

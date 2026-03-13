@@ -11,6 +11,7 @@ from typing import Any
 from .bet_client import BetClient, BetRecord
 from .live_monitor import LiveLayerTwoMonitor, WatchlistMatch
 from .models import PreMatchWatchRecord
+from .money_manager import MoneyManager
 from .prematch_scan import PreMatchScanner
 
 
@@ -22,6 +23,8 @@ class PipelineConfig:
     persist_signals: bool = True
     persist_bets: bool = True
     finished_cleanup_interval_seconds: int = 300
+    # How often to poll Cloudbet for bet settlement (seconds)
+    settlement_check_interval_seconds: int = 300
 
 
 def _append_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -40,15 +43,22 @@ class PipelineRunner:
     scanner: PreMatchScanner
     monitor: LiveLayerTwoMonitor
     bet_client: BetClient
+    money_manager: MoneyManager
     config: PipelineConfig = field(default_factory=PipelineConfig)
     bet_log: dict[str, BetRecord] = field(default_factory=dict)
     _last_prematch_scan: datetime | None = field(default=None, repr=False)
     _last_cleanup: datetime | None = field(default=None, repr=False)
+    _last_settlement_check: datetime | None = field(default=None, repr=False)
 
     # ── Public entry point ────────────────────────────────────────────────────
 
     def run_forever(self) -> None:
-        print(f"[{_ts()}] Pipeline started. dry_run={self.bet_client.config.dry_run}", flush=True)
+        print(
+            f"[{_ts()}] Pipeline started."
+            f"  dry_run={self.bet_client.config.dry_run}"
+            f"  {self.money_manager.summary_line()}",
+            flush=True,
+        )
         try:
             while True:
                 self._tick()
@@ -67,6 +77,11 @@ class PipelineRunner:
 
         # Layer 2: live monitor
         self._run_live_monitor(now)
+
+        # Settlement check (update bankroll when bets resolve)
+        if self._should_check_settlements(now):
+            self._settle_open_bets()
+            self._last_settlement_check = now
 
         # Cleanup finished matches from memory
         if self._should_cleanup(now):
@@ -98,11 +113,9 @@ class PipelineRunner:
                 self.monitor.watchlist[rec.match_id] = _record_to_watchlist(rec)
                 new_count += 1
 
-        verbose = self.scanner.config.verbose
         print(
-            f"[{_ts()}] [SCAN] competitions scanned  "
-            f"candidates={len(records)}  new_to_watchlist={new_count}  "
-            f"watchlist_size={len(self.monitor.watchlist)}",
+            f"[{_ts()}] [SCAN] candidates={len(records)}  new_to_watchlist={new_count}"
+            f"  watchlist_size={len(self.monitor.watchlist)}",
             flush=True,
         )
 
@@ -137,31 +150,50 @@ class PipelineRunner:
             qualified_count += 1
 
             if sig.match_id in self.bet_log:
-                continue
+                continue  # already bet on this match
 
-            # Active bets cap
+            # ── Hard limit: max concurrent bets ──────────────────────────────
             active = sum(
                 1 for b in self.bet_log.values()
                 if b.status in ("ACCEPTED", "PENDING", "DRY_RUN")
             )
             if active >= self.bet_client.config.max_active_bets:
                 print(
-                    f"[{_ts()}] [BET SKIP] max_active_bets={self.bet_client.config.max_active_bets} reached "
-                    f"for {sig.match_id}",
+                    f"[{_ts()}] [BET SKIP] max_active_bets={self.bet_client.config.max_active_bets}"
+                    f" reached for {sig.match_id}",
                     flush=True,
                 )
                 continue
 
-            bet = self.bet_client.place_bet(sig)
+            # ── Kelly stake sizing ────────────────────────────────────────────
+            kelly_stake = self.money_manager.compute_stake(sig.over_odds, sig.quality_score)
+
+            # ── Bankroll / daily-loss / exposure guards ───────────────────────
+            ok, reason = self.money_manager.can_bet(kelly_stake)
+            if not ok:
+                print(
+                    f"[{_ts()}] [BET BLOCK] {reason}  match={sig.match_id}",
+                    flush=True,
+                )
+                continue
+
+            # ── Place bet ────────────────────────────────────────────────────
+            bet = self.bet_client.place_bet(sig, stake_override=kelly_stake)
             self.bet_log[sig.match_id] = bet
             bet_count += 1
 
+            # Update bankroll only on real accepted bets (not dry-run)
+            if not bet.dry_run and bet.status in ("ACCEPTED", "PENDING"):
+                self.money_manager.on_bet_placed(bet.stake)
+
             tag = "[DRY-RUN]" if bet.dry_run else "[BET]"
             print(
-                f"[{_ts()}] {tag} {sig.home_team} vs {sig.away_team}  "
-                f"over {sig.main_total_line} @ {sig.over_odds}  "
-                f"stake={bet.stake} {self.bet_client.config.currency}  "
-                f"status={bet.status}  ref={bet.reference_id}",
+                f"[{_ts()}] {tag} {sig.home_team} vs {sig.away_team}"
+                f"  over {sig.main_total_line} @ {sig.over_odds}"
+                f"  stake={bet.stake:.2f} USDT  status={bet.status}"
+                f"  ref={bet.reference_id}"
+                f"  quality={sig.quality_score:.0f}"
+                f"  {self.money_manager.summary_line()}",
                 flush=True,
             )
 
@@ -169,19 +201,87 @@ class PipelineRunner:
                 _append_jsonl(self.config.output_dir / "bet_log.jsonl", [bet.to_dict()])
 
         print(
-            f"[{_ts()}] [LIVE] signals={len(signals)}  qualified={qualified_count}  bets_placed={bet_count}",
+            f"[{_ts()}] [LIVE] signals={len(signals)}"
+            f"  qualified={qualified_count}  bets_placed={bet_count}"
+            f"  {self.money_manager.summary_line()}",
             flush=True,
         )
 
         if self.config.persist_signals and signal_dicts:
             _append_jsonl(self.config.output_dir / "live_signals.jsonl", signal_dicts)
 
+    # ── Settlement check ──────────────────────────────────────────────────────
+
+    def _should_check_settlements(self, now: datetime) -> bool:
+        if self._last_settlement_check is None:
+            self._last_settlement_check = now  # initialise on first tick
+            return False
+        return (
+            (now - self._last_settlement_check).total_seconds()
+            >= self.config.settlement_check_interval_seconds
+        )
+
+    def _settle_open_bets(self) -> None:
+        """Poll Cloudbet for bets that may have settled."""
+        for match_id, bet in list(self.bet_log.items()):
+            if bet.dry_run or bet.status not in ("ACCEPTED", "PENDING"):
+                continue
+
+            settled, won, accepted_odds = self.bet_client.is_bet_settled(bet.reference_id)
+            if not settled:
+                continue
+
+            new_status = "SETTLED_WON" if won else "SETTLED_LOST"
+            updated = BetRecord(
+                match_id=bet.match_id,
+                reference_id=bet.reference_id,
+                event_id=bet.event_id,
+                market_key=bet.market_key,
+                selection_key=bet.selection_key,
+                handicap=bet.handicap,
+                stake=bet.stake,
+                requested_price=bet.requested_price,
+                accepted_price=accepted_odds or bet.accepted_price,
+                status=new_status,
+                rejection_reason=bet.rejection_reason,
+                bet_time=bet.bet_time,
+                signal_quality=bet.signal_quality,
+                home_team=bet.home_team,
+                away_team=bet.away_team,
+                favorite_side=bet.favorite_side,
+                minute=bet.minute,
+                score_home=bet.score_home,
+                score_away=bet.score_away,
+                dry_run=False,
+            )
+            self.bet_log[match_id] = updated
+
+            self.money_manager.on_bet_settled(
+                bet.stake,
+                won=won,
+                accepted_odds=accepted_odds or bet.accepted_price,
+            )
+
+            result_tag = "WON" if won else "LOST"
+            print(
+                f"[{_ts()}] [SETTLE] {bet.home_team} vs {bet.away_team}"
+                f"  stake={bet.stake:.2f}  {result_tag}"
+                f"  {self.money_manager.summary_line()}",
+                flush=True,
+            )
+
+            if self.config.persist_bets:
+                _append_jsonl(self.config.output_dir / "bet_log.jsonl", [updated.to_dict()])
+
     # ── Cleanup ───────────────────────────────────────────────────────────────
 
     def _should_cleanup(self, now: datetime) -> bool:
         if self._last_cleanup is None:
             return False
-        return (now - self._last_cleanup).total_seconds() >= self.config.finished_cleanup_interval_seconds
+        return (
+            (now - self._last_cleanup).total_seconds()
+            >= self.config.finished_cleanup_interval_seconds
+        )
 
     def _cleanup_finished(self) -> None:
         finished_ids = [
@@ -193,7 +293,7 @@ class PipelineRunner:
             self.monitor.states.pop(mid, None)
         if finished_ids:
             print(
-                f"[{_ts()}] [CLEANUP] removed {len(finished_ids)} finished matches from watchlist",
+                f"[{_ts()}] [CLEANUP] removed {len(finished_ids)} finished matches",
                 flush=True,
             )
 

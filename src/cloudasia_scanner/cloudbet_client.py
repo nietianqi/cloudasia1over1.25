@@ -38,6 +38,14 @@ class CloudbetClient:
         payload = self._get_json("/sports/soccer")
         competitions: list[dict[str, Any]] = []
 
+        # Newer payload shape: a single sport object with top-level categories.
+        categories_direct = payload.get("categories", [])
+        if isinstance(categories_direct, list):
+            for category in categories_direct:
+                comp_list = category.get("competitions", []) if isinstance(category, dict) else []
+                if isinstance(comp_list, list):
+                    competitions.extend(c for c in comp_list if isinstance(c, dict))
+
         sports = payload.get("sports", [])
         if isinstance(sports, list):
             for sport in sports:

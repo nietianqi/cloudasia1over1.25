@@ -53,6 +53,46 @@ def _event(
     }
 
 
+def _event_v2(
+    match_id: str,
+    total_line: float,
+    over_odds: float,
+    under_odds: float,
+    minute: int,
+    score: tuple[int, int],
+    red_cards: tuple[int, int],
+    market_status: str = "SELECTION_ENABLED",
+) -> dict:
+    return {
+        "id": match_id,
+        "clock": {"minute": minute},
+        "score": {"home": score[0], "away": score[1]},
+        "redCards": {"home": red_cards[0], "away": red_cards[1]},
+        "markets": {
+            "soccer.total_goals": {
+                "submarkets": {
+                    "period=ft": {
+                        "selections": [
+                            {
+                                "outcome": "over",
+                                "params": f"total={total_line}",
+                                "price": over_odds,
+                                "status": market_status,
+                            },
+                            {
+                                "outcome": "under",
+                                "params": f"total={total_line}",
+                                "price": under_odds,
+                                "status": market_status,
+                            },
+                        ]
+                    }
+                }
+            }
+        },
+    }
+
+
 def _watch(match_id: str = "match-1") -> WatchlistMatch:
     return WatchlistMatch(
         match_id=match_id,
@@ -188,6 +228,26 @@ def test_monitor_rejected_with_expected_reasons() -> None:
     assert "score_not_allowed" in second[0].reject_reason
     assert "red_card_present" in second[0].reject_reason
     assert "over_odds_too_low" in second[0].reject_reason
+
+
+def test_monitor_supports_cloudbet_v2_selection_list_shape() -> None:
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    match_id = "match-v2"
+    client = SequenceCloudbetClient(
+        {
+            match_id: [
+                _event_v2(match_id, total_line=1.25, over_odds=1.91, under_odds=1.91, minute=60, score=(0, 0), red_cards=(0, 0)),
+                _event_v2(match_id, total_line=1.25, over_odds=1.92, under_odds=1.90, minute=61, score=(0, 0), red_cards=(0, 0)),
+            ]
+        }
+    )
+    monitor = LiveLayerTwoMonitor(client=client, watchlist={match_id: _watch(match_id)}, config=LiveMonitorConfig())
+
+    first = monitor.monitor_once(now)
+    second = monitor.monitor_once(now + timedelta(seconds=30))
+
+    assert first[0].signal_status == "triggered"
+    assert second[0].signal_status == "qualified"
 
 
 def test_monitor_finishes_when_market_settled() -> None:

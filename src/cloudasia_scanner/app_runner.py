@@ -11,6 +11,7 @@ from .bet_client import BetClient, BetConfig
 from .cloudbet_client import SPORTS_ODDS_BASE_URL, CloudbetClient
 from .config_utils import as_bool, as_float, as_int, load_toml_config, resolve_path
 from .live_monitor import LiveLayerTwoMonitor, LiveMonitorConfig, load_watchlist
+from .money_manager import MoneyConfig, MoneyManager
 from .pipeline import PipelineConfig, PipelineRunner
 from .prematch_scan import PreMatchScanner, ScanConfig
 
@@ -160,6 +161,27 @@ def _build_scanner(config: dict[str, Any], client: CloudbetClient) -> PreMatchSc
     return PreMatchScanner(client=client, config=scan_config)
 
 
+def _build_money_manager(config: dict[str, Any], base_dir: Path) -> MoneyManager:
+    section = config.get("money", {}) if isinstance(config.get("money"), dict) else {}
+    bankroll_file_raw = section.get("bankroll_file", "data/bankroll.json")
+    bankroll_path = resolve_path(base_dir, bankroll_file_raw, default="data/bankroll.json")
+    bankroll_file = str(bankroll_path) if bankroll_path else "data/bankroll.json"
+
+    money_config = MoneyConfig(
+        initial_bankroll=as_float(section.get("initial_bankroll"), 500.0),
+        kelly_fraction=as_float(section.get("kelly_fraction"), 0.25),
+        base_win_rate=as_float(section.get("base_win_rate"), 0.55),
+        max_stake_pct=as_float(section.get("max_stake_pct"), 0.05),
+        min_stake=as_float(section.get("min_stake"), 5.0),
+        max_stake=as_float(section.get("max_stake"), 50.0),
+        daily_loss_limit_pct=as_float(section.get("daily_loss_limit_pct"), 0.10),
+        max_concurrent_exposure_pct=as_float(section.get("max_concurrent_exposure_pct"), 0.25),
+        bankroll_file=bankroll_file,
+        auto_settle_after_minutes=as_int(section.get("auto_settle_after_minutes"), 130),
+    )
+    return MoneyManager(config=money_config)
+
+
 def _build_bet_client(config: dict[str, Any], api_key: str | None) -> BetClient:
     section = config.get("betting", {}) if isinstance(config.get("betting"), dict) else {}
     bet_config = BetConfig(
@@ -193,11 +215,13 @@ def _run_pipeline_continuous(config: dict[str, Any], base_dir: Path, client: Clo
     scanner = _build_scanner(config, client)
     monitor = _build_live_monitor(config, client)
     bet_client = _build_bet_client(config, str(api_key) if api_key else None)
+    money_manager = _build_money_manager(config, base_dir)
 
     runner = PipelineRunner(
         scanner=scanner,
         monitor=monitor,
         bet_client=bet_client,
+        money_manager=money_manager,
         config=pipeline_config,
     )
     runner.run_forever()

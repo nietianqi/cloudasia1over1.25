@@ -15,6 +15,7 @@ dependencies = [
 [project.scripts]
 cloudasia-scan = "cloudasia_scanner.cli:main"
 cloudasia-live-monitor = "cloudasia_scanner.live_cli:main"
+cloudasia-run = "cloudasia_scanner.app_runner:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

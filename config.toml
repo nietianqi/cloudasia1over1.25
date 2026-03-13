@@ -48,11 +48,44 @@ output_dir = "data"
 [betting]
 # 主开关：false = 完全不投注
 enabled = true
-# 空跑模式：true = 打印但不真实下注；确认信号正常后改为 false
-dry_run = true
+# 实盘模式（dry_run = false 表示真实下注）
+dry_run = false
+# stake_per_bet 作为 fallback；正常由 MoneyManager Kelly 公式计算
 stake_per_bet = 10.0
 currency = "USDT"
-# 信号触发后如果赔率低于此值则放弃（防止滑点）
+# 信号触发后赔率低于此值则放弃（防止滑点）
 min_accepted_price = 1.78
-# 同时最多允许多少笔未结算注单
+# 同时最多允许多少笔未结算注单（硬上限）
 max_active_bets = 5
+
+[money]
+# ── 初始资金 ──────────────────────────────────────────────────────────────────
+# 首次运行时的本金（USDT）；data/bankroll.json 存在时以持久化余额为准
+initial_bankroll = 500.0
+
+# ── Kelly 参数 ────────────────────────────────────────────────────────────────
+# Kelly 分数（0.25 = 四分之一 Kelly，兼顾增长与风险控制）
+kelly_fraction = 0.25
+# 策略基础胜率保守估计（TG1.25 晚场强队无进球信号）
+base_win_rate = 0.55
+
+# ── 单注上下限 ────────────────────────────────────────────────────────────────
+# 单注不超过当前资金的 5%
+max_stake_pct = 0.05
+# 单注最低金额（USDT）
+min_stake = 5.0
+# 单注硬上限（USDT）
+max_stake = 50.0
+
+# ── 风控止损 ──────────────────────────────────────────────────────────────────
+# 当日亏损超过开盘资金 10% 时停止当天下注
+daily_loss_limit_pct = 0.10
+# 未结算注单总敞口不超过资金的 25%
+max_concurrent_exposure_pct = 0.25
+
+# ── 结算轮询 ──────────────────────────────────────────────────────────────────
+# 下注后超过此分钟数调用 Cloudbet API 确认结果
+auto_settle_after_minutes = 130
+
+# 资金状态持久化文件（跨进程重启后恢复余额）
+bankroll_file = "data/bankroll.json"

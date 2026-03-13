@@ -11,8 +11,8 @@ import json
 from .cloudbet_client import CloudbetClient
 
 TOTAL_MARKET_KEYS = ("soccer.total_goals", "soccer.totalGoals", "soccer.totals")
-TRADING_MARKERS = ("TRADING", "OPEN", "ACTIVE")
-NON_TRADING_MARKERS = ("SUSPENDED", "CLOSED", "SETTLED", "CANCELLED")
+TRADING_MARKERS = ("TRADING", "OPEN", "ACTIVE", "ENABLED")
+NON_TRADING_MARKERS = ("SUSPENDED", "CLOSED", "SETTLED", "CANCELLED", "DISABLED")
 FINISHED_MARKERS = ("SETTLED", "CLOSED", "CANCELLED", "RESULTED")
 ALLOWED_SCORE_SET = {(0, 0), (1, 0), (0, 1)}
 
@@ -251,6 +251,16 @@ def _selection_odds(selection: dict[str, Any] | None) -> float | None:
     return None
 
 
+def _selection_param_float(selection: dict[str, Any], key: str) -> float | None:
+    params = selection.get("params")
+    if isinstance(params, dict):
+        return _safe_float(params.get(key))
+    if isinstance(params, str):
+        parsed = parse_qs(params, keep_blank_values=False)
+        return _safe_float(parsed.get(key, [None])[0])
+    return None
+
+
 def _selection_max_stake(selection: dict[str, Any] | None) -> float | None:
     if not isinstance(selection, dict):
         return None
@@ -290,7 +300,59 @@ def _main_total_market_for_event(event: dict[str, Any]) -> MainTotalMarket | Non
         for submarket_key, submarket in submarkets.items():
             total, period = _extract_submarket_params(submarket_key, submarket)
             if total is None or total < 0:
+                # shape B: selections list carries many lines in selection params.
+                selections = submarket.get("selections")
+                if period is not None and period not in ("ft", "full_time", "regular"):
+                    continue
+                if not isinstance(selections, list):
+                    continue
+                grouped: dict[float, dict[str, dict[str, Any]]] = {}
+                for item in selections:
+                    if not isinstance(item, dict):
+                        continue
+                    outcome = item.get("outcome")
+                    if outcome not in ("over", "under"):
+                        continue
+                    line = _selection_param_float(item, "total")
+                    if line is None:
+                        line = _selection_param_float(item, "line")
+                    if line is None or line < 0:
+                        continue
+                    grouped.setdefault(float(line), {})[outcome] = item
+
+                for line, sides in grouped.items():
+                    over_selection = sides.get("over")
+                    under_selection = sides.get("under")
+                    if over_selection is None or under_selection is None:
+                        continue
+                    over_odds = _selection_odds(over_selection)
+                    under_odds = _selection_odds(under_selection)
+                    if over_odds is None or under_odds is None:
+                        continue
+                    if over_odds <= 1.0 or under_odds <= 1.0:
+                        continue
+
+                    imbalance = abs((1.0 / over_odds) - (1.0 / under_odds))
+                    mean_to_even = abs(((over_odds + under_odds) / 2.0) - 2.0)
+                    status = _market_status(submarket, over_selection, under_selection)
+                    max_stake = _selection_max_stake(over_selection) or _selection_max_stake(under_selection)
+                    candidates.append(
+                        (
+                            imbalance,
+                            mean_to_even,
+                            MainTotalMarket(
+                                main_total_line=float(line),
+                                over_odds=over_odds,
+                                under_odds=under_odds,
+                                market_status=status,
+                                max_stake=max_stake,
+                                source_market_key=market_key,
+                                source_submarket_key=submarket_key,
+                            ),
+                        )
+                    )
                 continue
+
             if period is not None and period not in ("ft", "full_time", "regular"):
                 continue
 
