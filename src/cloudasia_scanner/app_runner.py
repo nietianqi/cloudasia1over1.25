@@ -7,9 +7,11 @@ import os
 import time
 from typing import Any
 
+from .bet_client import BetClient, BetConfig
 from .cloudbet_client import SPORTS_ODDS_BASE_URL, CloudbetClient
 from .config_utils import as_bool, as_float, as_int, load_toml_config, resolve_path
 from .live_monitor import LiveLayerTwoMonitor, LiveMonitorConfig, load_watchlist
+from .pipeline import PipelineConfig, PipelineRunner
 from .prematch_scan import PreMatchScanner, ScanConfig
 
 
@@ -128,6 +130,79 @@ def _run_live(config: dict[str, Any], base_dir: Path, client: CloudbetClient) ->
         time.sleep(poll_seconds)
 
 
+def _build_live_monitor(config: dict[str, Any], client: CloudbetClient) -> LiveLayerTwoMonitor:
+    section = config.get("live", {}) if isinstance(config.get("live"), dict) else {}
+    allowed_scores = _parse_allowed_scores(section.get("allowed_scores"))
+    live_config = LiveMonitorConfig(
+        trigger_total_line=as_float(section.get("trigger_total_line"), 1.25),
+        primary_minute_start=as_int(section.get("primary_minute_start"), 55),
+        primary_minute_end=as_int(section.get("primary_minute_end"), 72),
+        allowed_scores=allowed_scores,
+        min_seconds_since_reopen=as_float(section.get("min_seconds_since_reopen"), 20.0),
+        max_line_jumps_last_60s=as_int(section.get("max_line_jumps_last_60s"), 1),
+        max_odds_jumps_last_60s=as_int(section.get("max_odds_jumps_last_60s"), 3),
+        min_over_odds=as_float(section.get("min_over_odds"), 1.8),
+        normal_poll_interval_seconds=as_int(section.get("normal_interval_seconds"), 15),
+        fast_poll_interval_seconds=as_int(section.get("fast_interval_seconds"), 5),
+        fast_poll_line_threshold=as_float(section.get("fast_line_threshold"), 1.75),
+    )
+    return LiveLayerTwoMonitor(client=client, watchlist={}, config=live_config)
+
+
+def _build_scanner(config: dict[str, Any], client: CloudbetClient) -> PreMatchScanner:
+    section = config.get("prematch", {}) if isinstance(config.get("prematch"), dict) else {}
+    scan_config = ScanConfig(
+        minutes_to_kickoff_max=as_float(section.get("minutes_to_kickoff_max"), 5.0),
+        min_favorite_line_abs=as_float(section.get("min_favorite_line_abs"), 1.0),
+        min_favorite_odds=as_float(section.get("min_favorite_odds"), 1.6),
+        verbose=as_bool(section.get("verbose"), False),
+    )
+    return PreMatchScanner(client=client, config=scan_config)
+
+
+def _build_bet_client(config: dict[str, Any], api_key: str | None) -> BetClient:
+    section = config.get("betting", {}) if isinstance(config.get("betting"), dict) else {}
+    bet_config = BetConfig(
+        enabled=as_bool(section.get("enabled"), True),
+        dry_run=as_bool(section.get("dry_run"), True),
+        stake_per_bet=as_float(section.get("stake_per_bet"), 10.0),
+        currency=str(section.get("currency", "USDT")),
+        min_accepted_price=as_float(section.get("min_accepted_price"), 1.78),
+        max_active_bets=as_int(section.get("max_active_bets"), 5),
+    )
+    return BetClient(api_key=api_key, config=bet_config)
+
+
+def _run_pipeline_continuous(config: dict[str, Any], base_dir: Path, client: CloudbetClient) -> None:
+    cloud = config.get("cloudbet", {}) if isinstance(config.get("cloudbet"), dict) else {}
+    api_key_env = cloud.get("api_key_env", "CLOUDBET_API_KEY")
+    api_key = cloud.get("api_key") or os.getenv(api_key_env)
+
+    pipeline_section = config.get("pipeline", {}) if isinstance(config.get("pipeline"), dict) else {}
+    output_dir_raw = pipeline_section.get("output_dir", "data")
+    output_dir = resolve_path(base_dir, output_dir_raw, default="data") or (base_dir / "data")
+
+    pipeline_config = PipelineConfig(
+        prematch_interval_seconds=as_int(pipeline_section.get("prematch_interval_seconds"), 60),
+        output_dir=output_dir,
+        persist_watchlist=as_bool(pipeline_section.get("persist_watchlist"), True),
+        persist_signals=as_bool(pipeline_section.get("persist_signals"), True),
+        persist_bets=as_bool(pipeline_section.get("persist_bets"), True),
+    )
+
+    scanner = _build_scanner(config, client)
+    monitor = _build_live_monitor(config, client)
+    bet_client = _build_bet_client(config, str(api_key) if api_key else None)
+
+    runner = PipelineRunner(
+        scanner=scanner,
+        monitor=monitor,
+        bet_client=bet_client,
+        config=pipeline_config,
+    )
+    runner.run_forever()
+
+
 def run_from_config(config_path: Path | None = None) -> None:
     config, path = load_toml_config(config_path)
     base_dir = path.parent
@@ -149,8 +224,14 @@ def run_from_config(config_path: Path | None = None) -> None:
         _run_prematch(config, base_dir, client)
         _run_live(config, base_dir, client)
         return
+    if mode == "pipeline_continuous":
+        _run_pipeline_continuous(config, base_dir, client)
+        return
 
-    raise ValueError("Invalid app.mode in config.toml. Use: prematch / live / pipeline")
+    raise ValueError(
+        "Invalid app.mode in config.toml. "
+        "Use: prematch / live / pipeline / pipeline_continuous"
+    )
 
 
 def main() -> None:

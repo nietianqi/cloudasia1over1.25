@@ -1,6 +1,6 @@
 [app]
-# prematch / live / pipeline
-mode = "prematch"
+# prematch / live / pipeline / pipeline_continuous
+mode = "pipeline_continuous"
 
 [cloudbet]
 # 建议写到环境变量 CLOUDBET_API_KEY，也可直接填这里
@@ -38,3 +38,21 @@ min_over_odds = 1.8
 normal_interval_seconds = 15
 fast_interval_seconds = 5
 fast_line_threshold = 1.75
+
+[pipeline]
+# 每隔多少秒跑一次赛前扫描
+prematch_interval_seconds = 60
+# 输出目录（watchlist.jsonl / live_signals.jsonl / bet_log.jsonl）
+output_dir = "data"
+
+[betting]
+# 主开关：false = 完全不投注
+enabled = true
+# 空跑模式：true = 打印但不真实下注；确认信号正常后改为 false
+dry_run = true
+stake_per_bet = 10.0
+currency = "USDT"
+# 信号触发后如果赔率低于此值则放弃（防止滑点）
+min_accepted_price = 1.78
+# 同时最多允许多少笔未结算注单
+max_active_bets = 5
