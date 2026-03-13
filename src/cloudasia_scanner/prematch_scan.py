@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -17,6 +18,7 @@ class ScanConfig:
     min_favorite_line_abs: float = 1.0
     min_favorite_odds: float = 1.6
     markets: list[str] = field(default_factory=lambda: list(AH_MARKET_KEYS))
+    verbose: bool = False
 
 
 @dataclass(slots=True)
@@ -72,17 +74,23 @@ def _selection_status_ok(status: Any) -> bool:
     if not isinstance(status, str):
         return True
     upper = status.upper()
-    blocked = ("SUSPENDED", "SETTLED", "CANCELLED", "CLOSED")
+    blocked = ("SUSPENDED", "SETTLED", "CANCELLED", "CLOSED", "DISABLED")
     return not any(tag in upper for tag in blocked)
+
+
+_LIVE_MARKERS = ("LIVE", "INPLAY", "IN_PLAY")
+_DEAD_MARKERS = ("SETTLED", "RESULTED", "FINISHED", "CANCELLED", "ABANDONED")
 
 
 def _event_status_prematch(status: Any) -> bool:
     if not isinstance(status, str):
         return True
     upper = status.upper()
-    if "LIVE" in upper:
+    if any(m in upper for m in _LIVE_MARKERS):
         return False
-    return "TRADING" in upper or "OPEN" in upper or "ACTIVE" in upper
+    if any(m in upper for m in _DEAD_MARKERS):
+        return False
+    return True
 
 
 def _extract_team_name(event: dict[str, Any], side: str, fallback: str) -> str:
@@ -117,7 +125,11 @@ def _extract_event_id(event: dict[str, Any]) -> str:
 
 
 def _extract_kickoff(event: dict[str, Any]) -> datetime | None:
-    for key in ("startsAt", "startTime", "start_time", "cutoffTime", "starts", "kickoff"):
+    for key in (
+        "startsAt", "startAt", "startTime", "start_time",
+        "cutoffTime", "cutoff_time", "starts", "kickoff",
+        "kickoffTime", "scheduledTime", "scheduled", "date",
+    ):
         dt = _parse_iso8601(event.get(key))
         if dt is not None:
             return dt
@@ -198,6 +210,16 @@ def _selection_odds(selection: dict[str, Any] | None) -> float | None:
     return None
 
 
+def _selection_param_float(selection: dict[str, Any], key: str) -> float | None:
+    params = selection.get("params")
+    if isinstance(params, dict):
+        return _safe_float(params.get(key))
+    if isinstance(params, str):
+        parsed = parse_qs(params, keep_blank_values=False)
+        return _safe_float(parsed.get(key, [None])[0])
+    return None
+
+
 def _extract_events_from_competition_payload(
     payload: dict[str, Any], fallback_league: str
 ) -> list[tuple[dict[str, Any], str]]:
@@ -243,48 +265,107 @@ def _main_ah_line_for_event(event: dict[str, Any]) -> MainAsianHandicapLine | No
 
     for submarket_key, submarket in submarkets.items():
         handicap, period = _extract_submarket_params(submarket_key, submarket)
-        if handicap is None or handicap == 0:
-            continue
         if period is not None and period not in ("ft", "full_time", "regular"):
             continue
 
-        home_selection, away_selection = _extract_selections(submarket)
-        home_odds = _selection_odds(home_selection)
-        away_odds = _selection_odds(away_selection)
+        # Shape A: one submarket = one handicap line.
+        if handicap is not None and handicap != 0:
+            home_selection, away_selection = _extract_selections(submarket)
+            home_odds = _selection_odds(home_selection)
+            away_odds = _selection_odds(away_selection)
 
-        if home_odds is None or away_odds is None:
-            continue
-        if home_odds <= 1.0 or away_odds <= 1.0:
-            continue
-        if not _selection_status_ok(home_selection.get("status") if home_selection else None):
-            continue
-        if not _selection_status_ok(away_selection.get("status") if away_selection else None):
-            continue
+            if home_odds is None or away_odds is None:
+                continue
+            if home_odds <= 1.0 or away_odds <= 1.0:
+                continue
+            if not _selection_status_ok(home_selection.get("status") if home_selection else None):
+                continue
+            if not _selection_status_ok(away_selection.get("status") if away_selection else None):
+                continue
 
-        if handicap < 0:
-            favorite_side = "home"
-            favorite_line_abs = abs(handicap)
-            fav_odds = home_odds
-            dog_odds = away_odds
-        else:
-            favorite_side = "away"
-            favorite_line_abs = abs(handicap)
-            fav_odds = away_odds
-            dog_odds = home_odds
+            if handicap < 0:
+                favorite_side = "home"
+                favorite_line_abs = abs(handicap)
+                fav_odds = home_odds
+                dog_odds = away_odds
+            else:
+                favorite_side = "away"
+                favorite_line_abs = abs(handicap)
+                fav_odds = away_odds
+                dog_odds = home_odds
 
-        imbalance = abs((1.0 / home_odds) - (1.0 / away_odds))
-        candidates.append(
-            MainAsianHandicapLine(
-                line_home=float(handicap),
-                home_odds=home_odds,
-                away_odds=away_odds,
-                favorite_side=favorite_side,
-                favorite_line_abs=favorite_line_abs,
-                fav_odds=fav_odds,
-                dog_odds=dog_odds,
-                imbalance=imbalance,
+            imbalance = abs((1.0 / home_odds) - (1.0 / away_odds))
+            candidates.append(
+                MainAsianHandicapLine(
+                    line_home=float(handicap),
+                    home_odds=home_odds,
+                    away_odds=away_odds,
+                    favorite_side=favorite_side,
+                    favorite_line_abs=favorite_line_abs,
+                    fav_odds=fav_odds,
+                    dog_odds=dog_odds,
+                    imbalance=imbalance,
+                )
             )
-        )
+            continue
+
+        # Shape B: one submarket (period=ft) contains many handicap lines in selection params.
+        selections = submarket.get("selections")
+        if not isinstance(selections, list):
+            continue
+        grouped: dict[float, dict[str, dict[str, Any]]] = {}
+        for item in selections:
+            if not isinstance(item, dict):
+                continue
+            outcome = item.get("outcome")
+            if outcome not in ("home", "away"):
+                continue
+            line = _selection_param_float(item, "handicap")
+            if line is None or line == 0:
+                continue
+            sides = grouped.setdefault(float(line), {})
+            sides[outcome] = item
+
+        for line, sides in grouped.items():
+            home_selection = sides.get("home")
+            away_selection = sides.get("away")
+            if home_selection is None or away_selection is None:
+                continue
+            home_odds = _selection_odds(home_selection)
+            away_odds = _selection_odds(away_selection)
+            if home_odds is None or away_odds is None:
+                continue
+            if home_odds <= 1.0 or away_odds <= 1.0:
+                continue
+            if not _selection_status_ok(home_selection.get("status")):
+                continue
+            if not _selection_status_ok(away_selection.get("status")):
+                continue
+
+            if line < 0:
+                favorite_side = "home"
+                favorite_line_abs = abs(line)
+                fav_odds = home_odds
+                dog_odds = away_odds
+            else:
+                favorite_side = "away"
+                favorite_line_abs = abs(line)
+                fav_odds = away_odds
+                dog_odds = home_odds
+
+            imbalance = abs((1.0 / home_odds) - (1.0 / away_odds))
+            candidates.append(
+                MainAsianHandicapLine(
+                    line_home=float(line),
+                    home_odds=home_odds,
+                    away_odds=away_odds,
+                    favorite_side=favorite_side,
+                    favorite_line_abs=favorite_line_abs,
+                    fav_odds=fav_odds,
+                    dog_odds=dog_odds,
+                    imbalance=imbalance,
+                )
+            )
 
     if not candidates:
         return None
@@ -303,8 +384,12 @@ class PreMatchScanner:
     def scan_once(self, now_utc: datetime | None = None) -> list[PreMatchWatchRecord]:
         scan_time = now_utc.astimezone(timezone.utc) if now_utc is not None else datetime.now(timezone.utc)
         records: list[PreMatchWatchRecord] = []
+        dbg = self.config.verbose
 
         competitions = self.client.get_soccer_competitions()
+        if dbg:
+            print(f"[debug] competitions fetched: {len(competitions)}", file=sys.stderr)
+
         for comp in competitions:
             competition_key = comp.get("key")
             if not isinstance(competition_key, str) or not competition_key:
@@ -314,6 +399,9 @@ class PreMatchScanner:
             payload = self.client.get_competition_odds(competition_key, self.config.markets)
             events = _extract_events_from_competition_payload(payload, league)
 
+            n_total = len(events)
+            n_window = n_status = n_no_ah = n_low_odds = n_no_bucket = 0
+
             for event, event_league in events:
                 kickoff = _extract_kickoff(event)
                 if kickoff is None:
@@ -322,20 +410,26 @@ class PreMatchScanner:
                 minutes_to_kickoff = (kickoff - scan_time).total_seconds() / 60.0
                 if minutes_to_kickoff < 0 or minutes_to_kickoff > self.config.minutes_to_kickoff_max:
                     continue
+                n_window += 1
 
                 if not _event_status_prematch(event.get("status")):
+                    n_status += 1
                     continue
 
                 main_line = _main_ah_line_for_event(event)
                 if main_line is None:
+                    n_no_ah += 1
                     continue
                 if main_line.favorite_line_abs < self.config.min_favorite_line_abs:
+                    n_no_ah += 1
                     continue
                 if main_line.fav_odds < self.config.min_favorite_odds:
+                    n_low_odds += 1
                     continue
 
                 bucket = classify_deep_ah_bucket(main_line.favorite_line_abs)
                 if bucket is None:
+                    n_no_bucket += 1
                     continue
 
                 home_team = _extract_team_name(event, "home", "Home")
@@ -363,6 +457,18 @@ class PreMatchScanner:
                         minutes_to_kickoff=round(minutes_to_kickoff, 3),
                     )
                 )
+
+            if dbg and (n_total > 0 or n_window > 0):
+                print(
+                    f"[debug] comp {competition_key!r:40s}  "
+                    f"events={n_total}  in_window={n_window}  "
+                    f"filtered_status={n_status}  no_ah={n_no_ah}  "
+                    f"low_odds={n_low_odds}  no_bucket={n_no_bucket}",
+                    file=sys.stderr,
+                )
+
+        if dbg:
+            print(f"[debug] total records: {len(records)}", file=sys.stderr)
 
         records.sort(key=lambda item: (item.kickoff_time, item.favorite_line_abs * -1, item.match_id))
         return records
