@@ -54,6 +54,29 @@ When `dry_run=false`, real bets are allowed only if:
 
 To lock live betting again, set `live_ack_token = ""`.
 
+## Startup Preflight (Important)
+
+In `pipeline_continuous`, startup now performs strict checks before entering the loop:
+
+- API key must exist (`cloudbet.api_key` or env `CLOUDBET_API_KEY`)
+- Odds API authentication must succeed
+- Account API info + balance must be readable
+
+If any of those fail, the process exits immediately (no endless unauthorized spam loop).
+
+## Real Account Balance Sync
+
+When running with `dry_run=false`, bankroll can sync from Cloudbet account balance at startup.
+
+Config in `[money]`:
+
+```toml
+sync_with_account_balance = true
+account_balance_currency = "USDT"
+```
+
+With sync enabled, local bankroll state is replaced by account balance on startup.
+
 ## Bankroll Management (Configurable)
 
 Configured in `[money]`:

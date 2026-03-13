@@ -8,7 +8,7 @@ import time
 from typing import Any
 
 from .bet_client import BetClient, BetConfig
-from .cloudbet_client import SPORTS_ODDS_BASE_URL, CloudbetClient
+from .cloudbet_client import ACCOUNT_BASE_URL, SPORTS_ODDS_BASE_URL, CloudbetClient
 from .config_utils import as_bool, as_float, as_int, load_toml_config, resolve_path
 from .live_monitor import LiveLayerTwoMonitor, LiveMonitorConfig, load_watchlist
 from .money_manager import MoneyConfig, MoneyManager
@@ -19,6 +19,24 @@ from .prematch_scan import PreMatchScanner, ScanConfig
 DEFAULT_ALLOWED_SCORES = {(0, 0), (1, 0), (0, 1)}
 
 
+def _ts() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _resolve_cloud_api_settings(config: dict[str, Any]) -> tuple[str | None, str, str, str, str]:
+    cloud = config.get("cloudbet", {}) if isinstance(config.get("cloudbet"), dict) else {}
+    api_key_env = str(cloud.get("api_key_env", "CLOUDBET_API_KEY"))
+    raw_api_key = cloud.get("api_key")
+    env_api_key = os.getenv(api_key_env)
+    api_key = str(raw_api_key).strip() if isinstance(raw_api_key, str) and raw_api_key.strip() else None
+    if not api_key:
+        api_key = str(env_api_key).strip() if isinstance(env_api_key, str) and env_api_key.strip() else None
+    api_key_header = str(cloud.get("api_key_header", "X-API-Key"))
+    base_url = str(cloud.get("base_url", SPORTS_ODDS_BASE_URL))
+    account_base_url = str(cloud.get("account_base_url", ACCOUNT_BASE_URL))
+    return api_key, api_key_env, api_key_header, base_url, account_base_url
+
+
 def _append_jsonl(output_path: Path, rows: list[dict[str, Any]]) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("a", encoding="utf-8") as fp:
@@ -27,17 +45,104 @@ def _append_jsonl(output_path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def _build_client(config: dict[str, Any]) -> CloudbetClient:
-    cloud = config.get("cloudbet", {}) if isinstance(config.get("cloudbet"), dict) else {}
-    api_key_env = cloud.get("api_key_env", "CLOUDBET_API_KEY")
-    api_key = cloud.get("api_key") or os.getenv(api_key_env)
-    api_key_header = cloud.get("api_key_header", "X-API-Key")
-    base_url = cloud.get("base_url", SPORTS_ODDS_BASE_URL)
+    api_key, _, api_key_header, base_url, account_base_url = _resolve_cloud_api_settings(config)
 
     return CloudbetClient(
         base_url=str(base_url),
         api_key=str(api_key) if api_key else None,
         api_key_header=str(api_key_header),
+        account_base_url=str(account_base_url),
     )
+
+
+def _startup_preflight(
+    config: dict[str, Any],
+    client: CloudbetClient,
+    bet_client: BetClient,
+    money_manager: MoneyManager,
+) -> None:
+    api_key, api_key_env, _, _, _ = _resolve_cloud_api_settings(config)
+    if not api_key:
+        raise PermissionError(
+            "Missing Cloudbet API key. "
+            f"Set environment variable `{api_key_env}` or fill `cloudbet.api_key` in config.toml."
+        )
+
+    live_unlocked = (
+        bet_client.config.enabled
+        and not bet_client.config.dry_run
+        and (
+            (not bet_client.config.require_live_ack)
+            or (bet_client.config.live_ack_token == bet_client.config.live_ack_phrase)
+        )
+    )
+    print(
+        f"[{_ts()}] [STARTUP] key_header={client.api_key_header} "
+        f"dry_run={bet_client.config.dry_run} live_unlocked={live_unlocked}",
+        flush=True,
+    )
+
+    # Fail fast before the endless pipeline loop if credentials are wrong.
+    client.validate_odds_auth()
+    print(f"[{_ts()}] [STARTUP] Cloudbet odds API auth OK.", flush=True)
+
+    money_section = config.get("money", {}) if isinstance(config.get("money"), dict) else {}
+    balance_currency = str(
+        money_section.get("account_balance_currency", bet_client.config.currency)
+    ).strip().upper() or bet_client.config.currency
+    sync_from_account = as_bool(
+        money_section.get("sync_with_account_balance"),
+        not bet_client.config.dry_run,
+    )
+
+    account_label = "unknown"
+    try:
+        account_info = client.get_account_info()
+        nickname = account_info.get("nickname") if isinstance(account_info, dict) else None
+        account_uuid = account_info.get("uuid") if isinstance(account_info, dict) else None
+        account_label = str(nickname or account_uuid or "unknown")
+        balance = client.get_account_balance(balance_currency)
+    except Exception as exc:
+        if sync_from_account or not bet_client.config.dry_run:
+            raise RuntimeError(f"Cloudbet Account API startup check failed: {exc}") from exc
+        print(
+            f"[{_ts()}] [STARTUP] account API unavailable in dry-run mode: {exc}",
+            flush=True,
+        )
+        return
+
+    if balance is None:
+        if sync_from_account or not bet_client.config.dry_run:
+            raise RuntimeError(
+                f"Cloudbet Account API returned no balance for currency={balance_currency}. "
+                "Check account currency availability."
+            )
+        print(
+            f"[{_ts()}] [STARTUP] balance unavailable for {balance_currency}; "
+            f"using local bankroll. {money_manager.summary_line()}",
+            flush=True,
+        )
+        return
+
+    print(
+        f"[{_ts()}] [STARTUP] account={account_label} "
+        f"{balance_currency}_balance={balance:.8f}",
+        flush=True,
+    )
+
+    if sync_from_account:
+        money_manager.sync_bankroll_from_account(balance)
+        print(
+            f"[{_ts()}] [STARTUP] bankroll synced from account "
+            f"({balance_currency} {balance:.2f}). {money_manager.summary_line()}",
+            flush=True,
+        )
+    else:
+        print(
+            f"[{_ts()}] [STARTUP] bankroll uses local state only. "
+            f"{money_manager.summary_line()}",
+            flush=True,
+        )
 
 
 def _parse_allowed_scores(raw: Any) -> set[tuple[int, int]]:
@@ -209,9 +314,7 @@ def _build_bet_client(config: dict[str, Any], api_key: str | None) -> BetClient:
 
 
 def _run_pipeline_continuous(config: dict[str, Any], base_dir: Path, client: CloudbetClient) -> None:
-    cloud = config.get("cloudbet", {}) if isinstance(config.get("cloudbet"), dict) else {}
-    api_key_env = cloud.get("api_key_env", "CLOUDBET_API_KEY")
-    api_key = cloud.get("api_key") or os.getenv(api_key_env)
+    api_key, _, _, _, _ = _resolve_cloud_api_settings(config)
 
     pipeline_section = config.get("pipeline", {}) if isinstance(config.get("pipeline"), dict) else {}
     output_dir_raw = pipeline_section.get("output_dir", "data")
@@ -237,6 +340,7 @@ def _run_pipeline_continuous(config: dict[str, Any], base_dir: Path, client: Clo
     monitor = _build_live_monitor(config, client)
     bet_client = _build_bet_client(config, str(api_key) if api_key else None)
     money_manager = _build_money_manager(config, base_dir)
+    _startup_preflight(config, client, bet_client, money_manager)
 
     runner = PipelineRunner(
         scanner=scanner,

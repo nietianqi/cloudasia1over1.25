@@ -134,3 +134,20 @@ def test_save_and_reload_persists_state() -> None:
         assert m2.bankroll == pytest.approx(970.0, abs=0.01)
         assert m2.open_exposure == pytest.approx(0.0, abs=0.01)
         assert m2.consecutive_losses == 1
+
+
+def test_sync_bankroll_from_account_resets_runtime_state() -> None:
+    with tempfile.TemporaryDirectory() as td:
+        m = _manager(bankroll=1000.0, tmp_dir=Path(td))
+        now = datetime.now(timezone.utc)
+        m.on_bet_placed(25.0, now_utc=now)
+        m.on_bet_settled(25.0, won=False)
+
+        m.sync_bankroll_from_account(777.77)
+
+        assert m.bankroll == pytest.approx(777.77, abs=0.01)
+        assert m.peak_bankroll == pytest.approx(777.77, abs=0.01)
+        assert m.open_exposure == pytest.approx(0.0, abs=0.01)
+        assert m.daily_pnl == pytest.approx(0.0, abs=0.01)
+        assert m.daily_bet_count == 0
+        assert m.consecutive_losses == 0

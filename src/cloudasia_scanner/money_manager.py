@@ -191,6 +191,22 @@ class MoneyManager:
         self._peak_bankroll = max(self._peak_bankroll, self._bankroll)
         self.save()
 
+    def sync_bankroll_from_account(self, amount: float) -> None:
+        """Hard-sync bankroll state to exchange/account balance on startup."""
+        if amount < 0:
+            raise ValueError("account balance cannot be negative")
+        synced = round(float(amount), 2)
+        self._bankroll = synced
+        self._peak_bankroll = synced
+        self._open_exposure = 0.0
+        self._daily_pnl = 0.0
+        self._day_start_bankroll = synced
+        self._today = _utc_today()
+        self._daily_bet_count = 0
+        self._consecutive_losses = 0
+        self._last_bet_time = None
+        self.save()
+
     @property
     def bankroll(self) -> float:
         return self._bankroll

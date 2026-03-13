@@ -652,6 +652,8 @@ class LiveLayerTwoMonitor:
 
             try:
                 event = self.client.get_event_odds(match_id, self.config.markets)
+            except PermissionError:
+                raise
             except Exception:
                 tracking.state = "WATCHING"
                 continue

@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 
+import pytest
+
 from cloudasia_scanner.live_monitor import (
     LiveLayerTwoMonitor,
     LiveMonitorConfig,
@@ -20,6 +22,11 @@ class SequenceCloudbetClient:
         if len(sequence) > 1:
             return sequence.pop(0)
         return sequence[0]
+
+
+class UnauthorizedCloudbetClient:
+    def get_event_odds(self, event_id: str, markets: list[str]) -> dict:
+        raise PermissionError("Cloudbet API unauthorized")
 
 
 def _event(
@@ -329,3 +336,16 @@ def test_triggered_action_is_monitoring() -> None:
 
     assert records[0].signal_status == "triggered"
     assert records[0].action == "monitoring"
+
+
+def test_monitor_raises_permission_error() -> None:
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    match_id = "match-auth"
+    monitor = LiveLayerTwoMonitor(
+        client=UnauthorizedCloudbetClient(),  # type: ignore[arg-type]
+        watchlist={match_id: _watch(match_id)},
+        config=LiveMonitorConfig(),
+    )
+
+    with pytest.raises(PermissionError):
+        monitor.monitor_once(now)

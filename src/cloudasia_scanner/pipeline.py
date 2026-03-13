@@ -103,6 +103,8 @@ class PipelineRunner:
     def _run_prematch_scan(self, now: datetime) -> None:
         try:
             records = self.scanner.scan_once(now)
+        except PermissionError:
+            raise
         except Exception as exc:
             print(f"[{_ts()}] [SCAN ERROR] {exc}", file=sys.stderr, flush=True)
             return
@@ -131,6 +133,8 @@ class PipelineRunner:
 
         try:
             signals = self.monitor.monitor_once(now)
+        except PermissionError:
+            raise
         except Exception as exc:
             print(f"[{_ts()}] [LIVE ERROR] {exc}", file=sys.stderr, flush=True)
             return

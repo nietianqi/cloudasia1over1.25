@@ -6,6 +6,7 @@ from typing import Any
 import requests
 
 SPORTS_ODDS_BASE_URL = "https://sports-api.cloudbet.com/pub/v2/odds"
+ACCOUNT_BASE_URL = "https://sports-api.cloudbet.com/pub"
 
 
 @dataclass(slots=True)
@@ -13,17 +14,23 @@ class CloudbetClient:
     """Minimal public odds client used by the pre-match scanner."""
 
     base_url: str = SPORTS_ODDS_BASE_URL
+    account_base_url: str = ACCOUNT_BASE_URL
     api_key: str | None = None
     api_key_header: str = "X-API-Key"
     timeout_seconds: float = 10.0
 
-    def _get_json(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        url = f"{self.base_url.rstrip('/')}/{path.lstrip('/')}"
+    def _request_json(
+        self,
+        base_url: str,
+        path: str,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
         headers: dict[str, str] = {}
         if self.api_key:
             headers[self.api_key_header] = self.api_key
         response = requests.get(url, params=params, headers=headers, timeout=self.timeout_seconds)
-        if response.status_code == 401:
+        if response.status_code in (401, 403):
             raise PermissionError(
                 "Cloudbet API unauthorized. Please provide a valid API key "
                 f"via `{self.api_key_header}` header."
@@ -33,6 +40,12 @@ class CloudbetClient:
         if not isinstance(data, dict):
             raise ValueError(f"Unexpected response type from {url}: {type(data)!r}")
         return data
+
+    def _get_json(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._request_json(self.base_url, path, params=params)
+
+    def _get_account_json(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._request_json(self.account_base_url, path, params=params)
 
     def get_soccer_competitions(self) -> list[dict[str, Any]]:
         payload = self._get_json("/sports/soccer")
@@ -74,6 +87,35 @@ class CloudbetClient:
         if event is None:
             raise ValueError(f"Cloudbet event payload not found for event_id={event_id}")
         return event
+
+    def validate_odds_auth(self) -> None:
+        """Raise if odds API credentials are invalid."""
+        self._get_json("/sports/soccer")
+
+    def get_account_info(self) -> dict[str, Any]:
+        return self._get_account_json("/v1/account/info")
+
+    def get_account_currencies(self) -> list[str]:
+        payload = self._get_account_json("/v1/account/currencies")
+        raw = payload.get("currencies")
+        if not isinstance(raw, list):
+            return []
+        values: list[str] = []
+        for item in raw:
+            if isinstance(item, str) and item.strip():
+                values.append(item.strip().upper())
+        return values
+
+    def get_account_balance(self, currency: str) -> float | None:
+        code = str(currency or "").strip().upper()
+        if not code:
+            return None
+        payload = self._get_account_json(f"/v1/account/currencies/{code}/balance")
+        raw_amount = payload.get("amount")
+        try:
+            return float(raw_amount) if raw_amount is not None else None
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _extract_event_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
