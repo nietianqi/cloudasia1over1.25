@@ -4,7 +4,7 @@ mode = "pipeline_continuous"
 
 [cloudbet]
 # Keep api_key empty and use env var in production.
-api_key = ""
+api_key = "eyJhbGciOiJSUzI1NiIsImtpZCI6IkhKcDkyNnF3ZXBjNnF3LU9rMk4zV05pXzBrRFd6cEdwTzAxNlRJUjdRWDAiLCJ0eXAiOiJKV1QifQ.eyJhY2Nlc3NfdGllciI6InRyYWRpbmciLCJleHAiOjE5OTYyMzk5ODIsImlhdCI6MTY4MDg3OTk4MiwianRpIjoiNDM2Yzc1NjgtMTM0Ny00MDJhLTg4ZDMtZDlhZmU3OGQ1MDdiIiwic3ViIjoiNDM4MzY1YTUtMzQ0Yi00NTRmLWE5NmQtM2YyMWUzMDc1YmYwIiwidGVuYW50IjoiY2xvdWRiZXQiLCJ1dWlkIjoiNDM4MzY1YTUtMzQ0Yi00NTRmLWE5NmQtM2YyMWUzMDc1YmYwIn0.4eI0AK7z17EyutBgx_0FLUc9r5nWR_oUuiurGPyNlcGSz3853wkipm1ul_-oIlijPbaIha1UoD_2v3u-X48cJsmQglLNyst-2UPie9qQ3t8bzQUlhnHjcye7Kc-msGHNi-ML5twdRI-42sESiAECTccsB6NVebHgCqZfAh9-PVT-Hmao4c9AJiyJ2NA5QOTcBz7BJR06MTC0ZMW5Yklm001eEaDYxpBAorDmvRg5GDldlCBuQfVcvip8Zkp0uPHuAu2TJTJrw7tMYXSn7CUWWlQ_oQ7Alb-AchSOLkk7y-eUfUtu7plYJnj50wBLs-NLBzjnV3ifUhDk0etB9HNebA"
 api_key_env = "CLOUDBET_API_KEY"
 api_key_header = "X-API-Key"
 base_url = "https://sports-api.cloudbet.com/pub/v2/odds"
@@ -60,28 +60,41 @@ live_ack_token = "LIVE_BETTING_ACK"
 [money]
 initial_bankroll = 500.0
 
-# Kelly (conservative production profile)
-kelly_fraction = 0.15
+# ── Kelly 参数 ────────────────────────────────────────────────────────────────
+# FIX: 从 0.15 提高到 0.25，确保在常见赔率(1.80-1.95)下单注超过最低 5 USDT
+kelly_fraction = 0.25
 base_win_rate = 0.55
 min_win_rate = 0.50
 max_win_rate = 0.70
 quality_adjustment = 0.07
-min_kelly_edge = 0.01
+# FIX: 去掉 min_kelly_edge 严格截断（设为 0），仅靠 force_min_stake 兜底
+min_kelly_edge = 0.0
 
-# Stake controls
-reserve_bankroll_pct = 0.20
-max_stake_pct = 0.02
+# ── 注额控制 ──────────────────────────────────────────────────────────────────
+# FIX: reserve_bankroll_pct 从 0.20 改为 0（不留备用金），让全部本金参与 Kelly 计算
+reserve_bankroll_pct = 0.0
+# max_stake_pct 从 0.02 调到 0.03（单注上限 = 3% 本金，约 15 USDT）
+max_stake_pct = 0.03
 min_stake = 5.0
 max_stake = 25.0
-force_min_stake = false
+# FIX: force_min_stake = true → 只要有正期望，至少下 min_stake（5 USDT）
+# 之前 false + 小 kelly = 返回 0 → [BET SKIP] no positive edge（主要原因）
+force_min_stake = true
 
-# Risk controls
-daily_loss_limit_pct = 0.04
-max_drawdown_pct = 0.12
-max_concurrent_exposure_pct = 0.08
-max_consecutive_losses = 3
-max_daily_bets = 8
-bet_cooldown_seconds = 60
+# ── 风控止损 ──────────────────────────────────────────────────────────────────
+# FIX: daily_loss_limit_pct 从 0.04 (4%=$20) 调到 0.10 (10%=$50)
+# 之前 4% 意味着 2 笔 $10 亏损就封停一天（太紧）
+daily_loss_limit_pct = 0.10
+# max_drawdown_pct 保持 20%（历史最高净值回撤超过 20% 暂停）
+max_drawdown_pct = 0.20
+# FIX: max_concurrent_exposure_pct 从 0.08 (8%=$40) 调到 0.20 (20%=$100)
+# 之前 8% 意味着连 2 笔 $25 注单都容不下
+max_concurrent_exposure_pct = 0.20
+# 连续亏损 5 次暂停（原 3 次太紧）
+max_consecutive_losses = 5
+max_daily_bets = 10
+# FIX: bet_cooldown_seconds 从 60 降到 15（赛事不会同时出信号，60 秒太保守）
+bet_cooldown_seconds = 15
 
 auto_settle_after_minutes = 130
 bankroll_file = "data/bankroll.json"

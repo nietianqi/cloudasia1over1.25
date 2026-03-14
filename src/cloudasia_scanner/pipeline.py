@@ -195,18 +195,31 @@ class PipelineRunner:
 
             # Update bankroll only on real accepted bets (not dry-run)
             if not bet.dry_run and bet.status in ("ACCEPTED", "PENDING"):
-                self.money_manager.on_bet_placed(bet.stake)
+                # Pass now_utc so cooldown timer is anchored to the same moment
+                # that was checked in can_bet() above.
+                self.money_manager.on_bet_placed(bet.stake, now_utc=now)
 
-            tag = "[DRY-RUN]" if bet.dry_run else "[BET]"
-            print(
-                f"[{_ts()}] {tag} {sig.home_team} vs {sig.away_team}"
-                f"  over {sig.main_total_line} @ {sig.over_odds}"
-                f"  stake={bet.stake:.2f} USDT  status={bet.status}"
-                f"  ref={bet.reference_id}"
-                f"  quality={sig.quality_score:.0f}"
-                f"  {self.money_manager.summary_line()}",
-                flush=True,
-            )
+            # ── Diagnostic logging per-bet ────────────────────────────────────
+            _skipped = bet.status.startswith("SKIPPED") or bet.status == "ERROR"
+            if _skipped:
+                # Surface silent failures clearly so user can debug
+                print(
+                    f"[{_ts()}] [BET_SKIP] {sig.home_team} vs {sig.away_team}"
+                    f"  status={bet.status}  reason={bet.rejection_reason}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                tag = "[DRY-RUN]" if bet.dry_run else "[BET]"
+                print(
+                    f"[{_ts()}] {tag} {sig.home_team} vs {sig.away_team}"
+                    f"  over {sig.main_total_line} @ {sig.over_odds}"
+                    f"  stake={bet.stake:.2f} USDT  status={bet.status}"
+                    f"  ref={bet.reference_id}"
+                    f"  quality={sig.quality_score:.0f}"
+                    f"  {self.money_manager.summary_line()}",
+                    flush=True,
+                )
 
             if self.config.persist_bets:
                 _append_jsonl(self.config.output_dir / "bet_log.jsonl", [bet.to_dict()])
