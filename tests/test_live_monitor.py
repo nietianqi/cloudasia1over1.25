@@ -153,7 +153,7 @@ def test_load_watchlist_prefers_latest_scan_time(tmp_path) -> None:
     assert watchlist["m1"].dog_odds_pre == 2.25
 
 
-def test_monitor_transitions_trigger_to_qualified() -> None:
+def test_monitor_qualifies_immediately_on_trigger_line() -> None:
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     match_id = "match-1"
     client = SequenceCloudbetClient(
@@ -170,15 +170,15 @@ def test_monitor_transitions_trigger_to_qualified() -> None:
     second = monitor.monitor_once(now + timedelta(seconds=30))
 
     assert len(first) == 1
-    assert first[0].signal_status == "triggered"
+    assert first[0].signal_status == "qualified"
     assert len(second) == 1
     assert second[0].signal_status == "qualified"
     assert second[0].signal == "TG125_LATE_FAVORITE_SIGNAL"
     assert second[0].action == "candidate_only"
-    assert first[0].action == "monitoring"
+    assert first[0].action == "candidate_only"
 
 
-def test_monitor_cooling_after_reopen_then_qualifies() -> None:
+def test_monitor_ignores_reopen_and_still_qualifies_on_trigger_line() -> None:
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     match_id = "match-2"
     client = SequenceCloudbetClient(
@@ -203,17 +203,16 @@ def test_monitor_cooling_after_reopen_then_qualifies() -> None:
     monitor = LiveLayerTwoMonitor(client=client, watchlist={match_id: _watch(match_id)}, config=LiveMonitorConfig())
 
     assert monitor.monitor_once(now) == []
-    triggered = monitor.monitor_once(now + timedelta(seconds=1))
-    cooling = monitor.monitor_once(now + timedelta(seconds=6))
-    qualified = monitor.monitor_once(now + timedelta(seconds=35))
+    first_hit = monitor.monitor_once(now + timedelta(seconds=1))
+    second_hit = monitor.monitor_once(now + timedelta(seconds=6))
+    third_hit = monitor.monitor_once(now + timedelta(seconds=35))
 
-    assert triggered[0].signal_status == "triggered"
-    assert cooling[0].signal_status == "cooling"
-    assert cooling[0].reject_reason == "recent_reopen"
-    assert qualified[0].signal_status == "qualified"
+    assert first_hit[0].signal_status == "qualified"
+    assert second_hit[0].signal_status == "qualified"
+    assert third_hit[0].signal_status == "qualified"
 
 
-def test_monitor_rejected_with_expected_reasons() -> None:
+def test_monitor_qualifies_even_if_old_filters_would_reject() -> None:
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     match_id = "match-3"
     client = SequenceCloudbetClient(
@@ -229,12 +228,9 @@ def test_monitor_rejected_with_expected_reasons() -> None:
     first = monitor.monitor_once(now)
     second = monitor.monitor_once(now + timedelta(seconds=30))
 
-    assert first[0].signal_status == "triggered"
-    assert second[0].signal_status == "rejected"
-    assert "minute_out_of_window" in second[0].reject_reason
-    assert "score_not_allowed" in second[0].reject_reason
-    assert "red_card_present" in second[0].reject_reason
-    assert "over_odds_too_low" in second[0].reject_reason
+    assert first[0].signal_status == "qualified"
+    assert second[0].signal_status == "qualified"
+    assert second[0].reject_reason is None
 
 
 def test_monitor_supports_cloudbet_v2_selection_list_shape() -> None:
@@ -253,7 +249,7 @@ def test_monitor_supports_cloudbet_v2_selection_list_shape() -> None:
     first = monitor.monitor_once(now)
     second = monitor.monitor_once(now + timedelta(seconds=30))
 
-    assert first[0].signal_status == "triggered"
+    assert first[0].signal_status == "qualified"
     assert second[0].signal_status == "qualified"
 
 
@@ -280,11 +276,11 @@ def test_monitor_finishes_when_market_settled() -> None:
     )
     monitor = LiveLayerTwoMonitor(client=client, watchlist={match_id: _watch(match_id)}, config=LiveMonitorConfig())
 
-    triggered = monitor.monitor_once(now)
+    qualified = monitor.monitor_once(now)
     finished_cycle = monitor.monitor_once(now + timedelta(seconds=30))
     after_finished = monitor.monitor_once(now + timedelta(seconds=60))
 
-    assert triggered[0].signal_status == "triggered"
+    assert qualified[0].signal_status == "qualified"
     assert finished_cycle == []
     assert after_finished == []
     assert monitor.states[match_id].state == "FINISHED"
@@ -320,7 +316,7 @@ def test_signal_record_includes_team_names() -> None:
     assert records[0].away_team == "Barcelona"
 
 
-def test_triggered_action_is_monitoring() -> None:
+def test_qualified_action_is_candidate_only() -> None:
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     match_id = "match-6"
     client = SequenceCloudbetClient(
@@ -334,8 +330,8 @@ def test_triggered_action_is_monitoring() -> None:
 
     records = monitor.monitor_once(now)
 
-    assert records[0].signal_status == "triggered"
-    assert records[0].action == "monitoring"
+    assert records[0].signal_status == "qualified"
+    assert records[0].action == "candidate_only"
 
 
 def test_monitor_raises_permission_error() -> None:

@@ -3,7 +3,7 @@
 Cloudbet football strategy runner with:
 
 - Layer 1: pre-match deep AH scan
-- Layer 2: live TG 1.25 trigger monitor
+- Layer 2: live TG 1.25 trigger monitor (single rule only)
 - Optional: continuous pipeline with real betting + bankroll controls
 
 ## Quick Start
@@ -34,6 +34,14 @@ Set in:
 [app]
 mode = "pipeline_continuous"
 ```
+
+## Live Rule (Current)
+
+The live layer now keeps only one condition:
+
+- Main Total Goals line equals `trigger_total_line` (default `1.25`)
+
+When line hits `1.25`, signal is marked as `qualified` immediately.
 
 ## Real-Money Betting Safety Gate
 

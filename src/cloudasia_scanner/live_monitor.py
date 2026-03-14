@@ -674,15 +674,9 @@ class LiveLayerTwoMonitor:
                 continue
 
             game_state = _extract_live_game_state(event)
-            first_touch = tracking.state == "WATCHING"
-            if first_touch:
-                tracking.state = "TRIGGERED"
-                records.append(self._build_signal_record(watch, game_state, market, now, "triggered", None))
-                continue
-
-            signal_status, reject_reason = self._evaluate_filters(watch, game_state, market)
-            tracking.state = signal_status.upper()
-            records.append(self._build_signal_record(watch, game_state, market, now, signal_status, reject_reason))
+            # Minimal live rule: qualify immediately once the main total line reaches trigger value.
+            tracking.state = "QUALIFIED"
+            records.append(self._build_signal_record(watch, game_state, market, now, "qualified", None))
 
         records.sort(key=lambda row: (row.signal_time, row.match_id))
         return records
