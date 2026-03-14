@@ -1,5 +1,6 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 import json
 import sys
 import time
@@ -24,7 +25,7 @@ class PipelineConfig:
     persist_bets: bool = True
     finished_cleanup_interval_seconds: int = 300
     settlement_check_interval_seconds: int = 300
-    # Print per-match TG line detail every N ticks (0 = disabled)
+    # Print per-match line detail every N ticks (0 disables detail logs)
     detail_log_every_n_ticks: int = 4
 
 
@@ -47,16 +48,22 @@ class PipelineRunner:
     money_manager: MoneyManager
     config: PipelineConfig = field(default_factory=PipelineConfig)
     bet_log: dict[str, BetRecord] = field(default_factory=dict)
+
     _last_prematch_scan: datetime | None = field(default=None, repr=False)
     _last_cleanup: datetime | None = field(default=None, repr=False)
     _last_settlement_check: datetime | None = field(default=None, repr=False)
     _tick_count: int = field(default=0, repr=False)
 
-    # ── Public entry point ────────────────────────────────────────────────────
+    _scan_executor: ThreadPoolExecutor = field(
+        default_factory=lambda: ThreadPoolExecutor(max_workers=1),
+        repr=False,
+    )
+    _scan_future: Future[list[PreMatchWatchRecord]] | None = field(default=None, repr=False)
+    _scan_started_at: datetime | None = field(default=None, repr=False)
 
     def run_forever(self) -> None:
         print(
-            f"[{_ts()}] ═══ Pipeline started ═══"
+            f"[{_ts()}] Pipeline started"
             f"  dry_run={self.bet_client.config.dry_run}"
             f"  {self.money_manager.summary_line()}",
             flush=True,
@@ -66,16 +73,15 @@ class PipelineRunner:
                 self._tick()
         except KeyboardInterrupt:
             print(f"\n[{_ts()}] Pipeline stopped by user.", flush=True)
-
-    # ── Core tick ─────────────────────────────────────────────────────────────
+        finally:
+            self._scan_executor.shutdown(wait=False, cancel_futures=True)
 
     def _tick(self) -> None:
         self._tick_count += 1
         now = datetime.now(timezone.utc)
 
-        if self._should_scan_prematch(now):
-            self._run_prematch_scan(now)
-            self._last_prematch_scan = now
+        self._collect_finished_prematch_scan(now)
+        self._maybe_start_prematch_scan(now)
 
         self._run_live_monitor(now)
 
@@ -87,72 +93,88 @@ class PipelineRunner:
             self._cleanup_finished()
             self._last_cleanup = now
 
-        sleep_s = self.monitor.recommended_poll_interval_seconds()
-        time.sleep(sleep_s)
-
-    # ── Layer 1 ───────────────────────────────────────────────────────────────
+        time.sleep(self.monitor.recommended_poll_interval_seconds())
 
     def _should_scan_prematch(self, now: datetime) -> bool:
         if self._last_prematch_scan is None:
             return True
-        return (now - self._last_prematch_scan).total_seconds() >= self.config.prematch_interval_seconds
+        elapsed = (now - self._last_prematch_scan).total_seconds()
+        return elapsed >= self.config.prematch_interval_seconds
 
-    def _run_prematch_scan(self, now: datetime) -> None:
+    def _maybe_start_prematch_scan(self, now: datetime) -> None:
+        if self._scan_future is not None and not self._scan_future.done():
+            return
+        if not self._should_scan_prematch(now):
+            return
+
+        self._scan_started_at = now
+        self._scan_future = self._scan_executor.submit(self.scanner.scan_once, now)
+        print(
+            f"[{_ts()}] [SCAN] async started  watchlist={len(self.monitor.watchlist)}",
+            flush=True,
+        )
+
+    def _collect_finished_prematch_scan(self, now: datetime) -> None:
+        if self._scan_future is None or not self._scan_future.done():
+            return
+
+        started_at = self._scan_started_at or now
+        duration_s = (now - started_at).total_seconds()
+
         try:
-            records = self.scanner.scan_once(now)
+            records = self._scan_future.result()
         except PermissionError:
             raise
         except Exception as exc:
             print(f"[{_ts()}] [SCAN ERROR] {exc}", file=sys.stderr, flush=True)
-            return
+            records = []
 
+        self._scan_future = None
+        self._scan_started_at = None
+        self._last_prematch_scan = now
+
+        if records:
+            self._apply_prematch_records(records, duration_s)
+        else:
+            print(
+                f"[{_ts()}] [SCAN] completed  candidates=0"
+                f"  duration={duration_s:.1f}s"
+                f"  watchlist={len(self.monitor.watchlist)}",
+                flush=True,
+            )
+
+    def _apply_prematch_records(self, records: list[PreMatchWatchRecord], duration_s: float) -> None:
         new_count = 0
+        update_count = 0
+
         for rec in records:
-            if rec.match_id not in self.monitor.watchlist:
-                self.monitor.watchlist[rec.match_id] = _record_to_watchlist(rec)
+            row = _record_to_watchlist(rec)
+            if rec.match_id in self.monitor.watchlist:
+                update_count += 1
+            else:
                 new_count += 1
-                print(
-                    f"[{_ts()}] [SCAN+] Added: {rec.home_team} vs {rec.away_team}"
-                    f"  AH={rec.favorite_line_abs:.2f} bucket={rec.pre_match_bucket}"
-                    f"  kickoff_in={rec.minutes_to_kickoff:.0f}min"
-                    f"  fav_odds={rec.fav_odds:.2f}",
-                    flush=True,
-                )
+            self.monitor.watchlist[rec.match_id] = row
 
         print(
-            f"[{_ts()}] [SCAN] candidates={len(records)}"
-            f"  new_added={new_count}"
-            f"  watchlist_total={len(self.monitor.watchlist)}",
+            f"[{_ts()}] [SCAN] completed  candidates={len(records)}"
+            f"  new={new_count} updated={update_count}"
+            f"  duration={duration_s:.1f}s"
+            f"  watchlist={len(self.monitor.watchlist)}",
             flush=True,
         )
 
-        if self.config.persist_watchlist and records:
+        if self.config.persist_watchlist:
             _append_jsonl(self.config.output_dir / "watchlist.jsonl", [r.to_dict() for r in records])
-
-    # ── Layer 2 ───────────────────────────────────────────────────────────────
 
     def _run_live_monitor(self, now: datetime) -> None:
         watchlist_size = len(self.monitor.watchlist)
+        n = max(1, self.config.detail_log_every_n_ticks)
 
-        # ── Empty watchlist ───────────────────────────────────────────────────
         if watchlist_size == 0:
-            # Log once per minute so user knows we're alive
-            if self._tick_count % 4 == 0:
-                next_scan_in = max(
-                    0,
-                    self.config.prematch_interval_seconds
-                    - int((now - self._last_prematch_scan).total_seconds())
-                    if self._last_prematch_scan else 0,
-                )
-                print(
-                    f"[{_ts()}] [LIVE] watchlist=0"
-                    f"  — waiting for pre-match candidates"
-                    f"  (next scan in {next_scan_in}s)",
-                    flush=True,
-                )
+            if self._tick_count % n == 0:
+                print(f"[{_ts()}] [LIVE] watchlist=0  waiting for scan", flush=True)
             return
 
-        # ── Poll live markets ─────────────────────────────────────────────────
         try:
             signals = self.monitor.monitor_once(now)
         except PermissionError:
@@ -161,14 +183,12 @@ class PipelineRunner:
             print(f"[{_ts()}] [LIVE ERROR] {exc}", file=sys.stderr, flush=True)
             return
 
-        # ── Process signals ───────────────────────────────────────────────────
         qualified_count = 0
         bet_count = 0
-        signal_dicts = []
+        signal_dicts: list[dict[str, Any]] = []
 
         for sig in signals:
             signal_dicts.append(sig.to_dict())
-
             if sig.signal_status != "qualified":
                 continue
             qualified_count += 1
@@ -176,64 +196,56 @@ class PipelineRunner:
             if sig.match_id in self.bet_log:
                 continue
 
-            # Hard limit: max concurrent bets
             active = sum(
-                1 for b in self.bet_log.values()
+                1
+                for b in self.bet_log.values()
                 if b.status in ("ACCEPTED", "PENDING", "DRY_RUN")
             )
             if active >= self.bet_client.config.max_active_bets:
                 print(
-                    f"[{_ts()}] [BET SKIP] max_active_bets={self.bet_client.config.max_active_bets}"
-                    f" reached — {sig.home_team} vs {sig.away_team}",
+                    f"[{_ts()}] [BET SKIP] max_active_bets reached"
+                    f"  match={sig.match_id}",
                     flush=True,
                 )
                 continue
 
-            # Kelly stake sizing
-            kelly_stake = self.money_manager.compute_stake(sig.over_odds, sig.quality_score)
-            if kelly_stake <= 0:
+            stake = self.money_manager.compute_stake(sig.over_odds, sig.quality_score)
+            if stake <= 0:
                 print(
                     f"[{_ts()}] [BET SKIP] no positive edge"
-                    f"  {sig.home_team} vs {sig.away_team}"
-                    f"  odds={sig.over_odds:.3f}  quality={sig.quality_score:.1f}",
+                    f"  match={sig.match_id} odds={sig.over_odds:.3f}"
+                    f"  quality={sig.quality_score:.1f}",
                     flush=True,
                 )
                 continue
 
-            # Bankroll / daily-loss / exposure guards
-            ok, reason = self.money_manager.can_bet(kelly_stake, now_utc=now)
+            ok, reason = self.money_manager.can_bet(stake, now_utc=now)
             if not ok:
-                print(
-                    f"[{_ts()}] [BET BLOCK] {reason}"
-                    f"  {sig.home_team} vs {sig.away_team}",
-                    flush=True,
-                )
+                print(f"[{_ts()}] [BET BLOCK] {reason}  match={sig.match_id}", flush=True)
                 continue
 
-            # Place bet
-            bet = self.bet_client.place_bet(sig, stake_override=kelly_stake)
+            bet = self.bet_client.place_bet(sig, stake_override=stake)
             self.bet_log[sig.match_id] = bet
             bet_count += 1
 
             if not bet.dry_run and bet.status in ("ACCEPTED", "PENDING"):
                 self.money_manager.on_bet_placed(bet.stake, now_utc=now)
 
-            _skipped = bet.status.startswith("SKIPPED") or bet.status == "ERROR"
-            if _skipped:
+            if bet.status.startswith("SKIPPED") or bet.status == "ERROR":
                 print(
-                    f"[{_ts()}] [BET_FAIL] {sig.home_team} vs {sig.away_team}"
+                    f"[{_ts()}] [BET FAIL] match={sig.match_id}"
                     f"  status={bet.status}"
                     f"  reason={bet.rejection_reason}",
                     flush=True,
                 )
             else:
-                tag = "[DRY-RUN]" if bet.dry_run else "[BET ✓]"
+                tag = "[DRY-RUN]" if bet.dry_run else "[BET]"
                 print(
                     f"[{_ts()}] {tag} {sig.home_team} vs {sig.away_team}"
                     f"  over {sig.main_total_line} @ {sig.over_odds}"
-                    f"  stake={bet.stake:.2f} USDT  status={bet.status}"
-                    f"  ref={bet.reference_id[:8]}…"
-                    f"  quality={sig.quality_score:.0f}"
+                    f"  stake={bet.stake:.2f}"
+                    f"  status={bet.status}"
+                    f"  ref={bet.reference_id}"
                     f"  {self.money_manager.summary_line()}",
                     flush=True,
                 )
@@ -241,52 +253,39 @@ class PipelineRunner:
             if self.config.persist_bets:
                 _append_jsonl(self.config.output_dir / "bet_log.jsonl", [bet.to_dict()])
 
-        # ── Always print poll summary ─────────────────────────────────────────
-        state_counts: dict[str, int] = {}
-        for s in self.monitor.states.values():
-            state_counts[s.state] = state_counts.get(s.state, 0) + 1
-        states_str = " ".join(f"{k}={v}" for k, v in sorted(state_counts.items()) if v > 0)
+        if signals or self._tick_count % n == 0:
+            print(
+                f"[{_ts()}] [LIVE] watchlist={watchlist_size}"
+                f"  signals={len(signals)} qualified={qualified_count}"
+                f"  bets_this_tick={bet_count} total_bets={len(self.bet_log)}"
+                f"  {self.money_manager.summary_line()}",
+                flush=True,
+            )
 
-        print(
-            f"[{_ts()}] [LIVE] watchlist={watchlist_size}  [{states_str}]"
-            f"  signals={len(signals)}  qualified={qualified_count}"
-            f"  bets_this_tick={bet_count}  bets_total={len(self.bet_log)}"
-            f"  {self.money_manager.summary_line()}",
-            flush=True,
-        )
-
-        # ── Per-match detail every N ticks ────────────────────────────────────
-        n = self.config.detail_log_every_n_ticks
-        if n > 0 and self._tick_count % n == 0:
+        if self.config.detail_log_every_n_ticks > 0 and self._tick_count % n == 0:
             for mid, state in self.monitor.states.items():
                 watch = self.monitor.watchlist.get(mid)
                 if watch is None:
                     continue
-                line_str = f"TG={state.last_total_line:.2f}" if state.last_total_line is not None else "TG=?"
-                odds_str = f"over={state.last_over_odds:.3f}" if state.last_over_odds is not None else ""
-                target_str = f"(target={self.monitor.config.trigger_total_line:.2f})"
-                already_bet = "✓bet" if mid in self.bet_log else ""
+                line = "?" if state.last_total_line is None else f"{state.last_total_line:.2f}"
+                over = "?" if state.last_over_odds is None else f"{state.last_over_odds:.3f}"
                 print(
-                    f"  ↳ {watch.home_team} vs {watch.away_team}"
-                    f"  {line_str} {odds_str} {target_str}"
-                    f"  AH={watch.favorite_line_abs:.2f}[{watch.pre_match_bucket}]"
-                    f"  state={state.state} {already_bet}",
+                    f"  -> {watch.home_team} vs {watch.away_team}"
+                    f"  TG={line} over={over}"
+                    f"  target={self.monitor.config.trigger_total_line:.2f}"
+                    f"  state={state.state}",
                     flush=True,
                 )
 
         if self.config.persist_signals and signal_dicts:
             _append_jsonl(self.config.output_dir / "live_signals.jsonl", signal_dicts)
 
-    # ── Settlement check ──────────────────────────────────────────────────────
-
     def _should_check_settlements(self, now: datetime) -> bool:
         if self._last_settlement_check is None:
             self._last_settlement_check = now
             return False
-        return (
-            (now - self._last_settlement_check).total_seconds()
-            >= self.config.settlement_check_interval_seconds
-        )
+        elapsed = (now - self._last_settlement_check).total_seconds()
+        return elapsed >= self.config.settlement_check_interval_seconds
 
     def _settle_open_bets(self) -> None:
         for match_id, bet in list(self.bet_log.items()):
@@ -329,10 +328,9 @@ class PipelineRunner:
             )
             self.bet_client.on_bet_settled()
 
-            result_tag = "WON ✓" if won else "LOST ✗"
+            result = "WON" if won else "LOST"
             print(
-                f"[{_ts()}] [SETTLE] {bet.home_team} vs {bet.away_team}"
-                f"  stake={bet.stake:.2f}  {result_tag}"
+                f"[{_ts()}] [SETTLE] match={match_id}  result={result}"
                 f"  {self.money_manager.summary_line()}",
                 flush=True,
             )
@@ -340,16 +338,12 @@ class PipelineRunner:
             if self.config.persist_bets:
                 _append_jsonl(self.config.output_dir / "bet_log.jsonl", [updated.to_dict()])
 
-    # ── Cleanup ───────────────────────────────────────────────────────────────
-
     def _should_cleanup(self, now: datetime) -> bool:
         if self._last_cleanup is None:
             self._last_cleanup = now
             return False
-        return (
-            (now - self._last_cleanup).total_seconds()
-            >= self.config.finished_cleanup_interval_seconds
-        )
+        elapsed = (now - self._last_cleanup).total_seconds()
+        return elapsed >= self.config.finished_cleanup_interval_seconds
 
     def _cleanup_finished(self) -> None:
         finished_ids = [
@@ -361,13 +355,11 @@ class PipelineRunner:
             self.monitor.states.pop(mid, None)
         if finished_ids:
             print(
-                f"[{_ts()}] [CLEANUP] removed {len(finished_ids)} finished matches"
-                f"  watchlist_remaining={len(self.monitor.watchlist)}",
+                f"[{_ts()}] [CLEANUP] removed={len(finished_ids)}"
+                f"  watchlist={len(self.monitor.watchlist)}",
                 flush=True,
             )
 
-
-# ── Helpers ─────────────────────────────────────────────────────────────────
 
 def _record_to_watchlist(rec: PreMatchWatchRecord) -> WatchlistMatch:
     return WatchlistMatch(

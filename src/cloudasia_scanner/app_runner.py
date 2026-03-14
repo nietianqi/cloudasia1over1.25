@@ -329,6 +329,7 @@ def _run_pipeline_continuous(config: dict[str, Any], base_dir: Path, client: Clo
         persist_watchlist=as_bool(pipeline_section.get("persist_watchlist"), True),
         persist_signals=as_bool(pipeline_section.get("persist_signals"), True),
         persist_bets=as_bool(pipeline_section.get("persist_bets"), True),
+        detail_log_every_n_ticks=as_int(pipeline_section.get("detail_log_every_n_ticks"), 4),
         finished_cleanup_interval_seconds=as_int(
             pipeline_section.get("finished_cleanup_interval_seconds"),
             300,
