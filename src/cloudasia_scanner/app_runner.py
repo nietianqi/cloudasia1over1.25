@@ -103,22 +103,25 @@ def _startup_preflight(
         account_label = str(nickname or account_uuid or "unknown")
         balance = client.get_account_balance(balance_currency)
     except Exception as exc:
-        if sync_from_account or not bet_client.config.dry_run:
+        # Only hard-fail when the user explicitly requested account sync.
+        # In live mode without sync, log a warning and continue with local bankroll.
+        if sync_from_account:
             raise RuntimeError(f"Cloudbet Account API startup check failed: {exc}") from exc
         print(
-            f"[{_ts()}] [STARTUP] account API unavailable in dry-run mode: {exc}",
+            f"[{_ts()}] [STARTUP] account API unavailable (using local bankroll): {exc}",
             flush=True,
         )
         return
 
     if balance is None:
-        if sync_from_account or not bet_client.config.dry_run:
+        # Hard-fail only when sync was explicitly requested.
+        if sync_from_account:
             raise RuntimeError(
                 f"Cloudbet Account API returned no balance for currency={balance_currency}. "
-                "Check account currency availability."
+                "Check account currency availability or set money.sync_with_account_balance=false."
             )
         print(
-            f"[{_ts()}] [STARTUP] balance unavailable for {balance_currency}; "
+            f"[{_ts()}] [STARTUP] {balance_currency} balance unavailable; "
             f"using local bankroll. {money_manager.summary_line()}",
             flush=True,
         )

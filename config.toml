@@ -13,10 +13,11 @@ base_url = "https://sports-api.cloudbet.com/pub/v2/odds"
 once = true
 interval_seconds = 60
 output = "data/watchlist.jsonl"
-minutes_to_kickoff_max = 5
+# 提前 120 分钟将符合条件的比赛加入监控名单，确保开球前 watchlist 已填充
+minutes_to_kickoff_max = 120
 min_favorite_line_abs = 1.0
 min_favorite_odds = 1.6
-verbose = false
+verbose = true
 
 [live]
 once = true
@@ -98,3 +99,7 @@ bet_cooldown_seconds = 15
 
 auto_settle_after_minutes = 130
 bankroll_file = "data/bankroll.json"
+
+# 禁用账户余额自动同步（Account API 不可用时不会崩溃退出）
+# 设为 true 则每次启动从 Cloudbet 账户拉取真实余额覆盖本地 bankroll
+sync_with_account_balance = false
