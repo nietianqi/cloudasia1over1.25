@@ -388,7 +388,7 @@ class PreMatchScanner:
 
         competitions = self.client.get_soccer_competitions()
         if dbg:
-            print(f"[debug] competitions fetched: {len(competitions)}", file=sys.stderr)
+            print(f"[debug] competitions fetched: {len(competitions)}")
 
         for comp in competitions:
             competition_key = comp.get("key")
@@ -458,17 +458,16 @@ class PreMatchScanner:
                     )
                 )
 
-            if dbg and (n_total > 0 or n_window > 0):
+            if dbg and n_window > 0:
                 print(
                     f"[debug] comp {competition_key!r:40s}  "
                     f"events={n_total}  in_window={n_window}  "
                     f"filtered_status={n_status}  no_ah={n_no_ah}  "
                     f"low_odds={n_low_odds}  no_bucket={n_no_bucket}",
-                    file=sys.stderr,
                 )
 
         if dbg:
-            print(f"[debug] total records: {len(records)}", file=sys.stderr)
+            print(f"[debug] total scan records: {len(records)}")
 
         records.sort(key=lambda item: (item.kickoff_time, item.favorite_line_abs * -1, item.match_id))
         return records
