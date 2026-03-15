@@ -4,15 +4,16 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlencode
 
 import requests
 
-BETTING_BASE_URL = "https://sports-api.cloudbet.com/pub/v3"
+BETTING_BASE_URL = "https://sports-api.cloudbet.com/pub/v4"
 
 # Cloudbet bet result values returned in settled bets
-_WIN_RESULTS = {"WON", "WIN", "WINNER", "HALF_WON"}
-_LOSS_RESULTS = {"LOST", "LOSE", "LOSER", "HALF_LOST"}
-_SETTLED_STATUSES = {"SETTLED", "RESULTED", "CLOSED"}
+_WIN_RESULTS = {"WIN", "HALF_WIN"}
+_LOSS_RESULTS = {"LOSS", "HALF_LOSS"}
+_SETTLED_STATES = {"COMPLETED", "CANCELLED"}
 
 
 def _status_matches(status: str, markers: set[str]) -> bool:
@@ -87,25 +88,32 @@ class BetClient:
         """Query Cloudbet for the current status of a placed bet.
 
         Returns the raw API response dict, or None on any error.
-        Fields of interest: status, result/outcome, price (accepted odds).
+        Cloudbet v4 response shape is usually: {"items": [...], "hasNext": false}.
         """
         url = f"{self.config.betting_base_url.rstrip('/')}/bets"
         try:
-            resp = self._session.get(url, params={"referenceId": reference_id}, timeout=15.0)
+            resp = self._session.get(
+                url,
+                params={"referenceIds": reference_id, "limit": 1},
+                timeout=15.0,
+            )
             if resp.status_code in (401, 403, 404):
                 return None
             resp.raise_for_status()
             data = resp.json()
         except Exception:
             return None
-        if isinstance(data, list) and data:
-            return data[0] if isinstance(data[0], dict) else None
         if isinstance(data, dict):
+            items = data.get("items")
+            if isinstance(items, list) and items:
+                return items[0] if isinstance(items[0], dict) else None
             # might be wrapped: {"bets": [...]}
             bets = data.get("bets")
             if isinstance(bets, list) and bets:
                 return bets[0] if isinstance(bets[0], dict) else None
-            return data
+            return data if any(k in data for k in ("state", "status", "result")) else None
+        if isinstance(data, list) and data:
+            return data[0] if isinstance(data[0], dict) else None
         return None
 
     def is_bet_settled(self, reference_id: str) -> tuple[bool, bool, float | None]:
@@ -116,12 +124,17 @@ class BetClient:
         raw = self.check_bet_status(reference_id)
         if raw is None:
             return False, False, None
-        status = str(raw.get("status", "")).upper()
-        if not _status_matches(status, _SETTLED_STATUSES):
+        state = str(raw.get("state") or raw.get("status") or "").upper()
+        if not _status_matches(state, _SETTLED_STATES):
             return False, False, None
         result_raw = str(raw.get("result") or raw.get("outcome") or "").upper()
         won = _status_matches(result_raw, _WIN_RESULTS)
-        raw_price = raw.get("price") or raw.get("acceptedPrice") or raw.get("accepted_price")
+        raw_price = None
+        selection = raw.get("selection")
+        if isinstance(selection, dict):
+            raw_price = selection.get("price")
+        if raw_price is None:
+            raw_price = raw.get("price") or raw.get("acceptedPrice") or raw.get("accepted_price")
         try:
             accepted_odds = float(raw_price) if raw_price is not None else None
         except (TypeError, ValueError):
@@ -129,7 +142,7 @@ class BetClient:
         return True, won, accepted_odds
 
     def _post_bet(self, body: dict[str, Any]) -> dict[str, Any]:
-        url = f"{self.config.betting_base_url.rstrip('/')}/bets/place"
+        url = f"{self.config.betting_base_url.rstrip('/')}/bets/place/straight"
         response = self._session.post(url, json=body, timeout=10.0)
         if response.status_code == 401:
             raise PermissionError("Cloudbet betting API unauthorized (401).")
@@ -165,6 +178,7 @@ class BetClient:
             requested_price = float(getattr(signal, "bet_price", signal.over_odds))
         except (TypeError, ValueError):
             requested_price = float(signal.over_odds)
+        market_url = self._build_market_url(market_key, selection_key, handicap_value)
 
         if not self.config.enabled:
             return BetRecord(
@@ -245,24 +259,17 @@ class BetClient:
                 dry_run=self.config.dry_run,
             )
 
-        # Cloudbet Trading API v3 uses a single marketUrl field.
-        # Format: {marketKey}/{selectionKey}?{paramKey}={value}
-        # O/U markets use "total=", AH markets use "handicap=".
-        mk_lower = market_key.lower()
-        if any(t in mk_lower for t in ("total", "totals", "goals")):
-            param_key = "total"
-        else:
-            param_key = "handicap"
-        param_val = str(round(handicap_value, 4)).rstrip("0").rstrip(".")
-        market_url = f"{market_key}/{selection_key}?{param_key}={param_val}"
-
         body = {
             "referenceId": reference_id,
-            "eventId": signal.match_id,
-            "marketUrl": market_url,
-            "stake": str(round(stake, 2)),
-            "price": str(round(requested_price, 4)),
             "currency": self.config.currency,
+            "stake": str(round(stake, 2)),
+            "acceptPartialStake": True,
+            "priceChange": {"value": "BETTER"},
+            "selection": {
+                "eventId": signal.match_id,
+                "marketUrl": market_url,
+                "price": str(round(requested_price, 4)),
+            },
         }
 
         if self.config.dry_run:
@@ -316,15 +323,25 @@ class BetClient:
                 dry_run=False,
             )
 
-        status = str(resp.get("status", "UNKNOWN")).upper()
-        rejection_reason = resp.get("rejectionReason") or resp.get("rejection_reason")
-        raw_price = resp.get("price")
+        state = str(resp.get("state") or resp.get("status") or "UNKNOWN").upper()
+        rejection_reason = (
+            resp.get("rejectionCode")
+            or resp.get("rejectionReason")
+            or resp.get("rejection_reason")
+            or resp.get("status")
+        )
+        raw_price = None
+        selection = resp.get("selection")
+        if isinstance(selection, dict):
+            raw_price = selection.get("price")
+        if raw_price is None:
+            raw_price = resp.get("price")
         try:
             accepted_price = float(raw_price) if raw_price is not None else None
         except (TypeError, ValueError):
             accepted_price = None
 
-        if status in ("ACCEPTED", "PENDING"):
+        if state in ("ACCEPTED", "PENDING_ACCEPTANCE"):
             self._active_count += 1
 
         return BetRecord(
@@ -337,7 +354,7 @@ class BetClient:
             stake=stake,
             requested_price=requested_price,
             accepted_price=accepted_price,
-            status=status,
+            status=state,
             rejection_reason=str(rejection_reason) if rejection_reason else None,
             bet_time=now,
             signal_quality=signal.quality_score,
@@ -349,3 +366,20 @@ class BetClient:
             score_away=signal.score_away,
             dry_run=False,
         )
+
+    @staticmethod
+    def _fmt_decimal(value: float) -> str:
+        text = f"{value:.4f}".rstrip("0").rstrip(".")
+        if text == "-0":
+            return "0"
+        return text
+
+    @staticmethod
+    def _build_market_url(market_key: str, selection_key: str, handicap_value: float) -> str:
+        # Cloudbet v4 expects: marketKey/outcome?params
+        path = f"{market_key}/{selection_key}"
+        if market_key in ("soccer.total_goals", "soccer.totalGoals", "soccer.totals"):
+            return f"{path}?{urlencode({'total': BetClient._fmt_decimal(handicap_value)})}"
+        if market_key in ("soccer.asian_handicap", "soccer.asianHandicap"):
+            return f"{path}?{urlencode({'handicap': BetClient._fmt_decimal(handicap_value)})}"
+        return path

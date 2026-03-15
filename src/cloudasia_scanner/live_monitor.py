@@ -134,7 +134,6 @@ class ExactFavoriteAHSelection:
     favorite_odds: float
     market_status: str
     source_market_key: str
-    source_submarket_key: str
 
 
 def _safe_float(value: Any) -> float | None:
@@ -384,7 +383,6 @@ def _find_exact_favorite_minus_line(
                         favorite_odds=favorite_odds,
                         market_status=status,
                         source_market_key=market_key,
-                        source_submarket_key=submarket_key,
                     )
                 )
                 continue
@@ -424,7 +422,6 @@ def _find_exact_favorite_minus_line(
                         favorite_odds=favorite_odds,
                         market_status=status,
                         source_market_key=market_key,
-                        source_submarket_key=submarket_key,
                     )
                 )
 

@@ -76,12 +76,12 @@ def test_dry_run_bet_updates_active_count() -> None:
 def test_is_bet_settled_status_matching_is_strict() -> None:
     client = BetClient(api_key=None, config=BetConfig())
 
-    client.check_bet_status = lambda _rid: {"status": "UNSETTLED", "result": "WON"}  # type: ignore[method-assign]
+    client.check_bet_status = lambda _rid: {"state": "ACCEPTED", "result": "WIN"}  # type: ignore[method-assign]
     settled, won, _ = client.is_bet_settled("r1")
     assert settled is False
     assert won is False
 
-    client.check_bet_status = lambda _rid: {"status": "BET_SETTLED", "result": "HALF_WON", "price": "1.95"}  # type: ignore[method-assign]
+    client.check_bet_status = lambda _rid: {"state": "COMPLETED", "result": "HALF_WIN", "price": "1.95"}  # type: ignore[method-assign]
     settled, won, odds = client.is_bet_settled("r2")
     assert settled is True
     assert won is True

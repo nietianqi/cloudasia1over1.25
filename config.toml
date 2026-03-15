@@ -91,7 +91,7 @@ max_drawdown_pct = 0.20
 max_concurrent_exposure_pct = 0.20
 # 连续亏损 5 次暂停（原 3 次太紧）
 max_consecutive_losses = 5
-max_daily_bets = 20
+max_daily_bets = 60
 # FIX: bet_cooldown_seconds 从 60 降到 15（赛事不会同时出信号，60 秒太保守）
 bet_cooldown_seconds = 15
 

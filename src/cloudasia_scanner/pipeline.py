@@ -240,17 +240,20 @@ class PipelineRunner:
                 continue
 
             bet = self.bet_client.place_bet(sig, stake_override=stake)
-            self.bet_log[sig.match_id] = bet
             bet_count += 1
-            watch = self.monitor.watchlist.get(sig.match_id)
-            if watch is not None:
-                if sig.strategy_name == "STRATEGY_A_OU":
-                    watch.strategy_a_done = True
-                elif sig.strategy_name == "STRATEGY_B_AH":
-                    watch.strategy_b_done = True
-                watch.bet_done = True
 
-            if not bet.dry_run and bet.status in ("ACCEPTED", "PENDING"):
+            executed = bet.status in ("ACCEPTED", "PENDING", "PENDING_ACCEPTANCE", "DRY_RUN")
+            if executed:
+                self.bet_log[sig.match_id] = bet
+                watch = self.monitor.watchlist.get(sig.match_id)
+                if watch is not None:
+                    if sig.strategy_name == "STRATEGY_A_OU":
+                        watch.strategy_a_done = True
+                    elif sig.strategy_name == "STRATEGY_B_AH":
+                        watch.strategy_b_done = True
+                    watch.bet_done = True
+
+            if not bet.dry_run and bet.status in ("ACCEPTED", "PENDING", "PENDING_ACCEPTANCE"):
                 self.money_manager.on_bet_placed(bet.stake, now_utc=now)
 
             if bet.status.startswith("SKIPPED") or bet.status == "ERROR":
@@ -314,7 +317,7 @@ class PipelineRunner:
 
     def _settle_open_bets(self) -> None:
         for match_id, bet in list(self.bet_log.items()):
-            if bet.dry_run or bet.status not in ("ACCEPTED", "PENDING"):
+            if bet.dry_run or bet.status not in ("ACCEPTED", "PENDING", "PENDING_ACCEPTANCE"):
                 continue
 
             settled, won, accepted_odds = self.bet_client.is_bet_settled(bet.reference_id)

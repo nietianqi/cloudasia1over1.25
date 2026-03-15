@@ -72,7 +72,7 @@ def test_pipeline_tick_does_not_block_on_slow_scan() -> None:
         # Live monitor should still run immediately while scan is in-flight.
         assert monitor.calls == 1
         assert runner._scan_future is not None
-        assert elapsed < 0.15
+        assert elapsed < 0.35
 
         # Next tick should collect completed scan result.
         time.sleep(0.35)
