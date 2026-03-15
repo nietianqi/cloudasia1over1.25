@@ -7,7 +7,7 @@ from typing import Any
 
 import requests
 
-BETTING_BASE_URL = "https://sports-api.cloudbet.com/pub/v2/betting"
+BETTING_BASE_URL = "https://sports-api.cloudbet.com/pub/v3"
 
 # Cloudbet bet result values returned in settled bets
 _WIN_RESULTS = {"WON", "WIN", "WINNER", "HALF_WON"}
@@ -91,7 +91,7 @@ class BetClient:
         """
         url = f"{self.config.betting_base_url.rstrip('/')}/bets"
         try:
-            resp = self._session.get(url, params={"referenceId": reference_id}, timeout=10.0)
+            resp = self._session.get(url, params={"referenceId": reference_id}, timeout=15.0)
             if resp.status_code in (401, 403, 404):
                 return None
             resp.raise_for_status()
@@ -129,7 +129,7 @@ class BetClient:
         return True, won, accepted_odds
 
     def _post_bet(self, body: dict[str, Any]) -> dict[str, Any]:
-        url = f"{self.config.betting_base_url.rstrip('/')}/place-bet"
+        url = f"{self.config.betting_base_url.rstrip('/')}/bets/place"
         response = self._session.post(url, json=body, timeout=10.0)
         if response.status_code == 401:
             raise PermissionError("Cloudbet betting API unauthorized (401).")
@@ -245,12 +245,21 @@ class BetClient:
                 dry_run=self.config.dry_run,
             )
 
+        # Cloudbet Trading API v3 uses a single marketUrl field.
+        # Format: {marketKey}/{selectionKey}?{paramKey}={value}
+        # O/U markets use "total=", AH markets use "handicap=".
+        mk_lower = market_key.lower()
+        if any(t in mk_lower for t in ("total", "totals", "goals")):
+            param_key = "total"
+        else:
+            param_key = "handicap"
+        param_val = str(round(handicap_value, 4)).rstrip("0").rstrip(".")
+        market_url = f"{market_key}/{selection_key}?{param_key}={param_val}"
+
         body = {
             "referenceId": reference_id,
             "eventId": signal.match_id,
-            "marketKey": market_key,
-            "selectionKey": selection_key,
-            "handicap": str(handicap_value),
+            "marketUrl": market_url,
             "stake": str(round(stake, 2)),
             "price": str(round(requested_price, 4)),
             "currency": self.config.currency,
