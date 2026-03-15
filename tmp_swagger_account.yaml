@@ -1,0 +1,257 @@
+basePath: /pub
+consumes:
+  - application/json
+definitions:
+  accountBalance:
+    properties:
+      amount:
+        description: the account balance
+        example: "0.12345678"
+        type: string
+    type: object
+  accountCurrencies:
+    properties:
+      currencies:
+        items:
+          type: string
+        type: array
+    type: object
+  accountInfo:
+    properties:
+      email:
+        example: username@example.org
+        type: string
+      nickname:
+        example: username
+        type: string
+      uuid:
+        example: e66a49bb-bdde-42e5-804f-878f82b0b824
+        type: string
+    type: object
+  affiliateAnalytics:
+    properties:
+      activePlayers:
+        format: int64
+        type: integer
+      clicks:
+        format: int64
+        type: integer
+      currency:
+        type: string
+      deposit_value:
+        type: string
+      depositors:
+        format: int64
+        type: integer
+      deposits:
+        format: int64
+        type: integer
+      ftds:
+        format: int64
+        type: integer
+      grossRevenue:
+        type: string
+      netRevenue:
+        type: string
+      revshare:
+        type: string
+      signups:
+        format: int64
+        type: integer
+      turnover:
+        type: string
+      uniqueClicks:
+        format: int64
+        type: integer
+    type: object
+  affiliateAnalyticsDetails:
+    properties:
+      details:
+        items:
+          $ref: '#/definitions/affiliateAnalyticsDetailsItem'
+        type: array
+    type: object
+  affiliateAnalyticsDetailsItem:
+    properties:
+      activePlayers:
+        format: int64
+        type: integer
+      currency:
+        type: string
+      deposit_value:
+        type: string
+      depositors:
+        format: int64
+        type: integer
+      deposits:
+        format: int64
+        type: integer
+      ftds:
+        format: int64
+        type: integer
+      grossRevenue:
+        type: string
+      grouping:
+        type: string
+      netRevenue:
+        type: string
+      revshare:
+        type: string
+      signups:
+        format: int64
+        type: integer
+      turnover:
+        type: string
+    type: object
+  error:
+    properties:
+      error:
+        type: string
+    type: object
+host: sports-api.cloudbet.com
+info:
+  description: |-
+    The Cloudbet Account API uses a long-lived API Key to allow secure access. The `API Key` follows the JWT authentication standard.
+
+    ## Testing the Account API
+
+    The Account API expects the `API Key` from the previous section to be included in all API requests to the server in an HTTP header that looks like the following:
+
+    `X-API-Key: <API Key>`
+
+    You must replace `<API Key>` with your own `API Key` as obtained in the previous section.
+
+    Example with sample Account `API Key`. Note that this is a standard JWT token.
+
+    ```
+
+    X-API-Key: eyJhbGciOiJSUzI1NiIsImtpZCI6ImxPVGE3LXVQLVd2QUk1VjhfOHhiYWxjZWlIUmM1OHd6Wi02c21CWGE0Z2MiLCJ0eXAiOiJKV1QifQ.eyJhY2Nlc3NfdGllciI6InRyYWRpbmciLCJleHAiOjE5MzMyMzk2MjgsImlhdCI6MTYxNzg3OTYyOCwiaXNzIjoic3BvcnRzLXBsYXllcnMiLCJqdGkiOiJmZmExZjQ5MC00MzY4LTRhMjEtOGQxYy00NzFlM2FkZTAyYjYiLCJzdWIiOiJiZjA2YjFhZi0zZjM1LTQ2NWUtYTQyZC01Mjc2YTY1ODdmNTIiLCJ0ZW5hbnQiOiJjbG91ZGJldCIsInVzZXJfdXVpZCI6ImJmMDZiMWFmLTNmMzUtNDY1ZS1hNDJkLTUyNzZhNjU4N2Y1MiIsInV1aWQiOiJiZjA2YjFhZi0zZjM1LTQ2NWUtYTQyZC01Mjc2YTY1ODdmNTIifQ.LEwR9AOQ5FGhAKZPGjQ7dl1-0YYUsXbU1fNb17rhUqr_hh7SQipAOv9AlnO8vdExv0bHKrX0zX3_rAnpKdyo5Z6yVVkd-ovpvoTvoiP6gP8yoQqRnrqZKFjHtxHT1wsvqYiBhM52gWzWH77_9ccw5nh78yaxsd2PbZ9meYnqZY_M9x9HGyEU6xFaM1AZ6NaDlGp1iEgqm3atv88vJC75k9H-8Krlh06IwaJxkMnNkrq2cS-rGPDv6tK4jMYpfc7rhXj9ffOr9YOMLQ-fpv7y01hwZD94oUTVoHbAFjBYgMwkh9CdQFbLKZyV0Owb4rFM5BY-4kfKwQlvP9E0TdW3Hw
+
+    ```
+  title: Cloudbet Account API.
+  version: "1.0"
+paths:
+  /v1/account/currencies:
+    get:
+      description: Account management handler to show the list of currencies currently active on the account.
+      operationId: accountCurrencies
+      responses:
+        "200":
+          description: account currency lists
+          schema:
+            $ref: '#/definitions/accountCurrencies'
+        default:
+          description: error response
+      summary: List currencies available on the account.
+      tags:
+        - Public
+  /v1/account/currencies/{currency}/balance:
+    get:
+      description: Account management handler to show the balance for a requested currency.
+      operationId: accountBalance
+      parameters:
+        - description: balance currency to query
+          in: path
+          name: currency
+          required: true
+          type: string
+      responses:
+        "200":
+          description: account balance object
+          schema:
+            $ref: '#/definitions/accountBalance'
+        default:
+          description: error response
+      summary: Get the account balance.
+      tags:
+        - Public
+  /v1/account/info:
+    get:
+      description: Account management handler to show account specific information.
+      operationId: accountInfo
+      responses:
+        "200":
+          description: account info
+          schema:
+            $ref: '#/definitions/accountInfo'
+        default:
+          description: error response
+      summary: Shows account information.
+      tags:
+        - Public
+  /v1/affiliate/analytics:
+    get:
+      operationId: analytics
+      parameters:
+        - description: Start of the time range in the YYYY-MM-DD format
+          in: query
+          name: from
+          required: true
+          type: string
+        - description: End of the time range (no more than 31 days after the from parameter) in the YYYY-MM-DD format
+          in: query
+          name: to
+          required: true
+          type: string
+      responses:
+        "200":
+          description: affiliate analytics
+          schema:
+            $ref: '#/definitions/affiliateAnalytics'
+        default:
+          description: error response
+      summary: Shows affiliate analytics.
+      tags:
+        - Public
+  /v1/affiliate/analytics/details:
+    get:
+      description: Shows affiliate analytics details grouped by specific grouping fields, e.g. `aftm_source` etc. See the `grouping` query parameter for a full list of grouping fields.
+      operationId: analytics_details
+      parameters:
+        - description: Start of the time range in the YYYY-MM-DD format
+          in: query
+          name: from
+          required: true
+          type: string
+        - description: End of the time range (no more than 31 days after the from parameter) in the YYYY-MM-DD format
+          in: query
+          name: to
+          required: true
+          type: string
+        - description: Field of grouping
+          enum:
+            - aftm_source
+            - aftm_campaign
+            - aftm_content
+            - aftm_medium
+            - aftm_referrer
+            - aftm_banner_id
+            - aftm_landing_url
+            - aftm_cid
+          in: query
+          name: grouping
+          required: true
+          type: string
+      responses:
+        "200":
+          description: Affiliate analytics details
+          schema:
+            $ref: '#/definitions/affiliateAnalyticsDetails'
+        default:
+          description: error response
+      summary: Get Affiliate Analytics Details
+      tags:
+        - Public
+produces:
+  - application/json
+  - application/x-protobuf
+schemes:
+  - https
+securityDefinitions:
+  ApiKeyAuth:
+    in: header
+    name: X-API-Key
+    type: apiKey
+swagger: "2.0"
+security:
+  - ApiKeyAuth: []
