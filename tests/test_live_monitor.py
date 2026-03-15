@@ -100,6 +100,54 @@ def _event_v2(
     }
 
 
+def _event_with_ah(
+    match_id: str,
+    total_line: float,
+    minute: int,
+    score: tuple[int, int],
+    home_line_main: float,
+    home_line_exact: float,
+    market_status: str = "TRADING",
+) -> dict:
+    return {
+        "id": match_id,
+        "clock": {"minute": minute},
+        "score": {"home": score[0], "away": score[1]},
+        "redCards": {"home": 0, "away": 0},
+        "markets": {
+            "soccer.total_goals": {
+                "submarkets": {
+                    f"period=ft&total={total_line}": {
+                        "status": market_status,
+                        "selections": {
+                            "over": {"odds": "1.90", "status": market_status},
+                            "under": {"odds": "1.92", "status": market_status},
+                        },
+                    }
+                }
+            },
+            "soccer.asian_handicap": {
+                "submarkets": {
+                    f"period=ft&handicap={home_line_main}": {
+                        "status": market_status,
+                        "selections": {
+                            "home": {"odds": "1.90", "status": market_status},
+                            "away": {"odds": "1.90", "status": market_status},
+                        },
+                    },
+                    f"period=ft&handicap={home_line_exact}": {
+                        "status": market_status,
+                        "selections": {
+                            "home": {"odds": "1.95", "status": market_status},
+                            "away": {"odds": "1.85", "status": market_status},
+                        },
+                    },
+                }
+            },
+        },
+    }
+
+
 def _watch(match_id: str = "match-1") -> WatchlistMatch:
     return WatchlistMatch(
         match_id=match_id,
@@ -207,7 +255,7 @@ def test_monitor_ignores_reopen_and_still_qualifies_on_trigger_line() -> None:
     second_hit = monitor.monitor_once(now + timedelta(seconds=6))
     third_hit = monitor.monitor_once(now + timedelta(seconds=35))
 
-    assert first_hit[0].signal_status == "qualified"
+    assert first_hit == []
     assert second_hit[0].signal_status == "qualified"
     assert third_hit[0].signal_status == "qualified"
 
@@ -251,6 +299,110 @@ def test_monitor_supports_cloudbet_v2_selection_list_shape() -> None:
 
     assert first[0].signal_status == "qualified"
     assert second[0].signal_status == "qualified"
+
+
+def test_strategy_a_triggers_on_line_below_125() -> None:
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    match_id = "match-a-low"
+    client = SequenceCloudbetClient(
+        {match_id: [_event(match_id, total_line=1.0, over_odds=1.88, under_odds=1.95, minute=70, score=(0, 0), red_cards=(0, 0))]}
+    )
+    monitor = LiveLayerTwoMonitor(client=client, watchlist={match_id: _watch(match_id)}, config=LiveMonitorConfig())
+
+    records = monitor.monitor_once(now)
+
+    assert len(records) == 1
+    assert records[0].signal_status == "qualified"
+    assert records[0].strategy_name == "STRATEGY_A_OU"
+    assert records[0].bet_market_key in ("soccer.total_goals", "soccer.totalGoals", "soccer.totals")
+    assert records[0].bet_selection_key == "over"
+    assert records[0].bet_handicap == pytest.approx(1.0)
+
+
+def test_strategy_b_triggers_on_draw_and_favorite_line_relaxed_to_075() -> None:
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    match_id = "match-b-ah"
+    client = SequenceCloudbetClient(
+        {
+            match_id: [
+                _event_with_ah(
+                    match_id=match_id,
+                    total_line=2.0,  # keep strategy A off
+                    minute=60,
+                    score=(1, 1),  # draw required
+                    home_line_main=-0.5,  # favorite line <= 0.75
+                    home_line_exact=-0.75,  # exact executable line
+                )
+            ]
+        }
+    )
+    monitor = LiveLayerTwoMonitor(client=client, watchlist={match_id: _watch(match_id)}, config=LiveMonitorConfig())
+
+    records = monitor.monitor_once(now)
+
+    assert len(records) == 1
+    assert records[0].signal_status == "qualified"
+    assert records[0].strategy_name == "STRATEGY_B_AH"
+    assert records[0].bet_market_key in ("soccer.asian_handicap", "soccer.asianHandicap")
+    assert records[0].bet_selection_key == "home"
+    assert records[0].bet_handicap == pytest.approx(-0.75)
+
+
+def test_strategy_b_requires_draw() -> None:
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    match_id = "match-b-not-draw"
+    client = SequenceCloudbetClient(
+        {
+            match_id: [
+                _event_with_ah(
+                    match_id=match_id,
+                    total_line=2.0,  # keep strategy A off
+                    minute=60,
+                    score=(2, 1),  # not draw
+                    home_line_main=-0.5,
+                    home_line_exact=-0.75,
+                )
+            ]
+        }
+    )
+    monitor = LiveLayerTwoMonitor(client=client, watchlist={match_id: _watch(match_id)}, config=LiveMonitorConfig())
+
+    records = monitor.monitor_once(now)
+
+    assert records == []
+
+
+def test_strategy_b_triggers_for_away_favorite_draw() -> None:
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    match_id = "match-b-away"
+    watch = _watch(match_id)
+    watch.favorite_side = "away"
+    watch.favorite_line_abs = 1.5
+
+    client = SequenceCloudbetClient(
+        {
+            match_id: [
+                _event_with_ah(
+                    match_id=match_id,
+                    total_line=2.0,  # keep strategy A off
+                    minute=66,
+                    score=(1, 1),  # draw required
+                    home_line_main=0.5,  # away favorite metric <= 0.75
+                    home_line_exact=0.75,  # away -0.75 representation
+                )
+            ]
+        }
+    )
+    monitor = LiveLayerTwoMonitor(client=client, watchlist={match_id: watch}, config=LiveMonitorConfig())
+
+    records = monitor.monitor_once(now)
+
+    assert len(records) == 1
+    assert records[0].signal_status == "qualified"
+    assert records[0].strategy_name == "STRATEGY_B_AH"
+    assert records[0].bet_selection_key == "away"
+    # Cloudbet AH line is represented from home side; away -0.75 equals home +0.75.
+    assert records[0].bet_handicap == pytest.approx(0.75)
 
 
 def test_monitor_finishes_when_market_settled() -> None:

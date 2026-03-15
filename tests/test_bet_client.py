@@ -6,8 +6,8 @@ from cloudasia_scanner.bet_client import BetClient, BetConfig
 from cloudasia_scanner.live_monitor import LiveSignalRecord
 
 
-def _signal() -> LiveSignalRecord:
-    return LiveSignalRecord(
+def _signal(**overrides) -> LiveSignalRecord:
+    payload = dict(
         signal="TG125_LATE_FAVORITE_SIGNAL",
         signal_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
         match_id="match-1",
@@ -33,7 +33,14 @@ def _signal() -> LiveSignalRecord:
         action="candidate_only",
         fav_odds_pre=1.65,
         dog_odds_pre=2.20,
+        strategy_name="STRATEGY_A_OU",
+        bet_market_key="soccer.total_goals",
+        bet_selection_key="over",
+        bet_handicap=1.25,
+        bet_price=1.90,
     )
+    payload.update(overrides)
+    return LiveSignalRecord(**payload)
 
 
 def test_live_bet_requires_ack_token() -> None:
@@ -79,3 +86,21 @@ def test_is_bet_settled_status_matching_is_strict() -> None:
     assert settled is True
     assert won is True
     assert odds == 1.95
+
+
+def test_place_bet_uses_signal_market_fields() -> None:
+    client = BetClient(api_key=None, config=BetConfig(enabled=True, dry_run=True, require_live_ack=False))
+    signal = _signal(
+        strategy_name="STRATEGY_B_AH",
+        bet_market_key="soccer.asian_handicap",
+        bet_selection_key="away",
+        bet_handicap=-0.75,
+        bet_price=1.97,
+    )
+    record = client.place_bet(signal, stake_override=12.5)
+
+    assert record.status == "DRY_RUN"
+    assert record.market_key == "soccer.asian_handicap"
+    assert record.selection_key == "away"
+    assert record.handicap == "-0.75"
+    assert record.requested_price == 1.97

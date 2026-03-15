@@ -149,3 +149,22 @@ def test_scan_supports_cloudbet_v2_selection_list_shape() -> None:
     assert row.favorite_side == "home"
     assert row.favorite_line_abs == 1.25
     assert row.pre_match_bucket == "B"
+
+
+def test_scan_window_is_strictly_after_now_and_within_five_minutes() -> None:
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    payload = {
+        "comp-window": {
+            "events": [
+                _event(now, home_line=-1.25, home_odds=1.70, away_odds=2.10),  # kickoff now -> exclude
+                _event(now + timedelta(minutes=5), home_line=-1.25, home_odds=1.70, away_odds=2.10),  # include
+                _event(now + timedelta(minutes=5, seconds=1), home_line=-1.25, home_odds=1.70, away_odds=2.10),  # exclude
+            ]
+        }
+    }
+    scanner = PreMatchScanner(client=FakeCloudbetClient(payload), config=ScanConfig(minutes_to_kickoff_max=5))
+
+    records = scanner.scan_once(now_utc=now)
+
+    assert len(records) == 1
+    assert records[0].minutes_to_kickoff == 5.0

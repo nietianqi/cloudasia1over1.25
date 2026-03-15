@@ -40,6 +40,15 @@ def _ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
+def _format_bet_line_for_log(signal: Any) -> str:
+    selection = str(signal.bet_selection_key)
+    handicap = float(signal.bet_handicap)
+    if signal.strategy_name == "STRATEGY_B_AH" and selection == "away" and handicap > 0:
+        # Cloudbet AH handicap is encoded from the home side perspective.
+        return f"{selection} -{handicap:.2f} (api_handicap={handicap:.2f})"
+    return f"{selection} {handicap}"
+
+
 @dataclass
 class PipelineRunner:
     scanner: PreMatchScanner
@@ -209,11 +218,11 @@ class PipelineRunner:
                 )
                 continue
 
-            stake = self.money_manager.compute_stake(sig.over_odds, sig.quality_score)
+            stake = self.money_manager.compute_stake(sig.bet_price, sig.quality_score)
             if stake <= 0:
                 print(
                     f"[{_ts()}] [BET SKIP] no positive edge"
-                    f"  match={sig.match_id} odds={sig.over_odds:.3f}"
+                    f"  match={sig.match_id} odds={sig.bet_price:.3f}"
                     f"  quality={sig.quality_score:.1f}",
                     flush=True,
                 )
@@ -227,6 +236,13 @@ class PipelineRunner:
             bet = self.bet_client.place_bet(sig, stake_override=stake)
             self.bet_log[sig.match_id] = bet
             bet_count += 1
+            watch = self.monitor.watchlist.get(sig.match_id)
+            if watch is not None:
+                if sig.strategy_name == "STRATEGY_A_OU":
+                    watch.strategy_a_done = True
+                elif sig.strategy_name == "STRATEGY_B_AH":
+                    watch.strategy_b_done = True
+                watch.bet_done = True
 
             if not bet.dry_run and bet.status in ("ACCEPTED", "PENDING"):
                 self.money_manager.on_bet_placed(bet.stake, now_utc=now)
@@ -242,7 +258,8 @@ class PipelineRunner:
                 tag = "[DRY-RUN]" if bet.dry_run else "[BET]"
                 print(
                     f"[{_ts()}] {tag} {sig.home_team} vs {sig.away_team}"
-                    f"  over {sig.main_total_line} @ {sig.over_odds}"
+                    f"  {sig.strategy_name}"
+                    f"  {_format_bet_line_for_log(sig)} @ {sig.bet_price}"
                     f"  stake={bet.stake:.2f}"
                     f"  status={bet.status}"
                     f"  ref={bet.reference_id}"
@@ -372,4 +389,7 @@ def _record_to_watchlist(rec: PreMatchWatchRecord) -> WatchlistMatch:
         pre_match_bucket=rec.pre_match_bucket,
         fav_odds_pre=rec.fav_odds,
         dog_odds_pre=rec.dog_odds,
+        strategy_a_done=rec.strategy_a_done,
+        strategy_b_done=rec.strategy_b_done,
+        bet_done=rec.bet_done,
     )

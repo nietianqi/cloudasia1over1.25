@@ -3,7 +3,7 @@
 Cloudbet football strategy runner with:
 
 - Layer 1: pre-match deep AH scan
-- Layer 2: live TG 1.25 trigger monitor (single rule only)
+- Layer 2: live dual-trigger monitor (Strategy A + Strategy B)
 - Optional: continuous pipeline with real betting + bankroll controls
 
 ## Quick Start
@@ -35,13 +35,20 @@ Set in:
 mode = "pipeline_continuous"
 ```
 
-## Live Rule (Current)
+## Live Rules (Current)
 
-The live layer now keeps only one condition:
+- Strategy A (OU):
+  - If live main Total Goals line `<= trigger_total_line` (default `1.25`) and market is tradable, place `Over` on that current line.
+- Strategy B (AH):
+  - Only when current score is draw (`home_score == away_score`).
+  - If pre-match favorite's live AH relaxed to `<= strategy_b_line_threshold` (default `0.75`),
+  - and an exact tradable favorite `-0.75` line exists,
+  - place favorite `-0.75`.
 
-- Main Total Goals line equals `trigger_total_line` (default `1.25`)
+Execution rules:
 
-When line hits `1.25`, signal is marked as `qualified` immediately.
+- Market suspended/closed: do not place.
+- Max one executed order per match (`bet_done=true`).
 
 ## Real-Money Betting Safety Gate
 
@@ -100,14 +107,7 @@ Configured in `[money]`:
 
 Stake can be `0` when edge is insufficient (no forced low-quality bets).
 
-`config.toml` defaults are now a conservative production profile:
-
-- 15% fractional Kelly
-- 20% reserve bankroll
-- 2% max stake per bet, 25 USDT hard cap
-- 4% daily loss stop, 12% max drawdown stop
-- 8% max concurrent exposure
-- max 3 consecutive losses, max 8 bets/day, 60s cooldown
+All bankroll controls are configurable in `config.toml`.
 
 ## Output Files
 

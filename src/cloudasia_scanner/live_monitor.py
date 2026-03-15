@@ -9,8 +9,10 @@ from urllib.parse import parse_qs
 import json
 
 from .cloudbet_client import CloudbetClient
+from .prematch_scan import AH_MARKET_KEYS, _main_ah_line_for_event
 
 TOTAL_MARKET_KEYS = ("soccer.total_goals", "soccer.totalGoals", "soccer.totals")
+ALL_LIVE_MARKET_KEYS = (*TOTAL_MARKET_KEYS, *AH_MARKET_KEYS)
 TRADING_MARKERS = ("TRADING", "OPEN", "ACTIVE", "ENABLED")
 NON_TRADING_MARKERS = ("SUSPENDED", "CLOSED", "SETTLED", "CANCELLED", "DISABLED")
 FINISHED_MARKERS = ("SETTLED", "CLOSED", "CANCELLED", "RESULTED")
@@ -19,20 +21,15 @@ ALLOWED_SCORE_SET = {(0, 0), (1, 0), (0, 1)}
 
 @dataclass(slots=True)
 class LiveMonitorConfig:
+    # Strategy A: trigger when main O/U line <= this value.
     trigger_total_line: float = 1.25
-    primary_minute_start: int = 55
-    primary_minute_end: int = 72
-    allowed_scores: set[tuple[int, int]] = field(default_factory=lambda: set(ALLOWED_SCORE_SET))
-    min_seconds_since_reopen: float = 20.0
-    max_line_jumps_last_60s: int = 1
-    max_odds_jumps_last_60s: int = 3
-    min_over_odds: float = 1.8
-    require_no_red_cards: bool = True
+    # Strategy B: trigger when favorite live AH line has relaxed to <= this value.
+    strategy_b_line_threshold: float = 0.75
     jump_window_seconds: int = 60
     normal_poll_interval_seconds: int = 15
     fast_poll_interval_seconds: int = 5
     fast_poll_line_threshold: float = 1.75
-    markets: list[str] = field(default_factory=lambda: list(TOTAL_MARKET_KEYS))
+    markets: list[str] = field(default_factory=lambda: list(dict.fromkeys(ALL_LIVE_MARKET_KEYS)))
 
 
 @dataclass(slots=True)
@@ -46,6 +43,9 @@ class WatchlistMatch:
     pre_match_bucket: str
     fav_odds_pre: float
     dog_odds_pre: float
+    strategy_a_done: bool = False
+    strategy_b_done: bool = False
+    bet_done: bool = False
 
 
 @dataclass(slots=True)
@@ -101,6 +101,11 @@ class LiveSignalRecord:
     action: str
     fav_odds_pre: float
     dog_odds_pre: float
+    strategy_name: str = "STRATEGY_A_OU"
+    bet_market_key: str = "soccer.total_goals"
+    bet_selection_key: str = "over"
+    bet_handicap: float = 1.25
+    bet_price: float = 1.90
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -120,6 +125,15 @@ class MatchTrackingState:
     line_last_change_ts: datetime | None = None
     odds_last_change_ts: datetime | None = None
     suspend_count: int = 0
+
+
+@dataclass(slots=True)
+class ExactFavoriteAHSelection:
+    favorite_side: str
+    favorite_odds: float
+    market_status: str
+    source_market_key: str
+    source_submarket_key: str
 
 
 def _safe_float(value: Any) -> float | None:
@@ -285,6 +299,138 @@ def _market_status(submarket: dict[str, Any], over_selection: dict[str, Any] | N
         under_selection.get("status") if isinstance(under_selection, dict) else None,
     )
     return status or "TRADING"
+
+
+def _extract_home_away_selections(submarket: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    selections = submarket.get("selections")
+    if isinstance(selections, dict):
+        home = selections.get("home")
+        away = selections.get("away")
+        return (home if isinstance(home, dict) else None, away if isinstance(away, dict) else None)
+    if isinstance(selections, list):
+        home_payload = None
+        away_payload = None
+        for item in selections:
+            if not isinstance(item, dict):
+                continue
+            outcome = item.get("outcome")
+            if outcome == "home":
+                home_payload = item
+            elif outcome == "away":
+                away_payload = item
+        return home_payload, away_payload
+    return None, None
+
+
+def _market_status_home_away(
+    submarket: dict[str, Any],
+    home_selection: dict[str, Any] | None,
+    away_selection: dict[str, Any] | None,
+) -> str:
+    status = _first_str_value(
+        submarket.get("status"),
+        home_selection.get("status") if isinstance(home_selection, dict) else None,
+        away_selection.get("status") if isinstance(away_selection, dict) else None,
+    )
+    return status or "TRADING"
+
+
+def _line_matches(value: float, target: float) -> bool:
+    return abs(round(value, 2) - round(target, 2)) < 1e-9
+
+
+def _favorite_live_line_metric(favorite_side: str, line_home: float) -> float:
+    # home favorite means home line is negative when still favorite.
+    if favorite_side == "home":
+        return abs(line_home) if line_home < 0 else 0.0
+    # away favorite means home line is positive when away is still favorite.
+    return abs(line_home) if line_home > 0 else 0.0
+
+
+def _find_exact_favorite_minus_line(
+    event: dict[str, Any],
+    favorite_side: str,
+    target_line_abs: float = 0.75,
+) -> ExactFavoriteAHSelection | None:
+    target_home_line = -target_line_abs if favorite_side == "home" else target_line_abs
+    markets = _extract_market_block(event.get("markets"))
+    candidates: list[ExactFavoriteAHSelection] = []
+
+    for market_key in AH_MARKET_KEYS:
+        market_data = markets.get(market_key)
+        if not isinstance(market_data, dict):
+            continue
+        submarkets = _extract_submarkets(market_data)
+        for submarket_key, submarket in submarkets.items():
+            line_home, period = _extract_submarket_params(submarket_key, submarket)
+            if period is not None and period not in ("ft", "full_time", "regular"):
+                continue
+
+            # Shape A: one submarket is one line.
+            if line_home is not None:
+                if not _line_matches(line_home, target_home_line):
+                    continue
+                home_sel, away_sel = _extract_home_away_selections(submarket)
+                home_odds = _selection_odds(home_sel)
+                away_odds = _selection_odds(away_sel)
+                if home_odds is None or away_odds is None:
+                    continue
+                status = _market_status_home_away(submarket, home_sel, away_sel)
+                favorite_odds = home_odds if favorite_side == "home" else away_odds
+                candidates.append(
+                    ExactFavoriteAHSelection(
+                        favorite_side=favorite_side,
+                        favorite_odds=favorite_odds,
+                        market_status=status,
+                        source_market_key=market_key,
+                        source_submarket_key=submarket_key,
+                    )
+                )
+                continue
+
+            # Shape B: one submarket with many lines in selections.
+            selections = submarket.get("selections")
+            if not isinstance(selections, list):
+                continue
+            grouped: dict[float, dict[str, dict[str, Any]]] = {}
+            for item in selections:
+                if not isinstance(item, dict):
+                    continue
+                outcome = item.get("outcome")
+                if outcome not in ("home", "away"):
+                    continue
+                line = _selection_param_float(item, "handicap")
+                if line is None:
+                    continue
+                grouped.setdefault(float(line), {})[outcome] = item
+
+            for line, sides in grouped.items():
+                if not _line_matches(line, target_home_line):
+                    continue
+                home_sel = sides.get("home")
+                away_sel = sides.get("away")
+                if home_sel is None or away_sel is None:
+                    continue
+                home_odds = _selection_odds(home_sel)
+                away_odds = _selection_odds(away_sel)
+                if home_odds is None or away_odds is None:
+                    continue
+                status = _market_status_home_away(submarket, home_sel, away_sel)
+                favorite_odds = home_odds if favorite_side == "home" else away_odds
+                candidates.append(
+                    ExactFavoriteAHSelection(
+                        favorite_side=favorite_side,
+                        favorite_odds=favorite_odds,
+                        market_status=status,
+                        source_market_key=market_key,
+                        source_submarket_key=submarket_key,
+                    )
+                )
+
+    if not candidates:
+        return None
+    # Choose the best price among exact-line candidates.
+    return max(candidates, key=lambda item: item.favorite_odds)
 
 
 def _main_total_market_for_event(event: dict[str, Any]) -> MainTotalMarket | None:
@@ -563,6 +709,9 @@ def load_watchlist(path: Path) -> dict[str, WatchlistMatch]:
             pre_match_bucket=pre_match_bucket,
             fav_odds_pre=fav_odds_pre,
             dog_odds_pre=dog_odds_pre,
+            strategy_a_done=bool(row.get("strategy_a_done", False)),
+            strategy_b_done=bool(row.get("strategy_b_done", False)),
+            bet_done=bool(row.get("bet_done", False)),
         )
         scan_time = _parse_iso8601(row.get("scan_time"))
 
@@ -669,14 +818,71 @@ class LiveLayerTwoMonitor:
                 tracking.state = "FINISHED"
                 continue
 
-            if round(market.main_total_line, 2) != round(self.config.trigger_total_line, 2):
-                tracking.state = "WATCHING"
+            game_state = _extract_live_game_state(event)
+            if watch.bet_done:
+                tracking.state = "BET_DONE"
                 continue
 
-            game_state = _extract_live_game_state(event)
-            # Minimal live rule: qualify immediately once the main total line reaches trigger value.
-            tracking.state = "QUALIFIED"
-            records.append(self._build_signal_record(watch, game_state, market, now, "qualified", None))
+            # Strategy A: main O/U line <= 1.25, market open.
+            if (
+                not watch.strategy_a_done
+                and market.main_total_line <= self.config.trigger_total_line
+                and _is_trading_status(market.market_status)
+            ):
+                tracking.state = "QUALIFIED_A"
+                records.append(
+                    self._build_signal_record(
+                        watch=watch,
+                        game_state=game_state,
+                        market=market,
+                        now=now,
+                        signal_status="qualified",
+                        reject_reason=None,
+                        strategy_name="STRATEGY_A_OU",
+                        bet_market_key=market.source_market_key,
+                        bet_selection_key="over",
+                        bet_handicap=market.main_total_line,
+                        bet_price=market.over_odds,
+                    )
+                )
+                continue
+
+            # Strategy B: draw + favorite line relaxed to <= 0.75 + exact favorite -0.75 tradable.
+            is_draw = (
+                game_state.score_home is not None
+                and game_state.score_away is not None
+                and game_state.score_home == game_state.score_away
+            )
+            if not watch.strategy_b_done and is_draw:
+                main_ah = _main_ah_line_for_event(event)
+                if main_ah is not None:
+                    favorite_metric = _favorite_live_line_metric(watch.favorite_side, main_ah.line_home)
+                    if favorite_metric <= self.config.strategy_b_line_threshold:
+                        exact_line = _find_exact_favorite_minus_line(
+                            event=event,
+                            favorite_side=watch.favorite_side,
+                            target_line_abs=0.75,
+                        )
+                        if exact_line is not None and _is_trading_status(exact_line.market_status):
+                            tracking.state = "QUALIFIED_B"
+                            records.append(
+                                self._build_signal_record(
+                                    watch=watch,
+                                    game_state=game_state,
+                                    market=market,
+                                    now=now,
+                                    signal_status="qualified",
+                                    reject_reason=None,
+                                    strategy_name="STRATEGY_B_AH",
+                                    bet_market_key=exact_line.source_market_key,
+                                    bet_selection_key=watch.favorite_side,
+                                    bet_handicap=(-0.75 if watch.favorite_side == "home" else 0.75),
+                                    bet_price=exact_line.favorite_odds,
+                                )
+                            )
+                            continue
+
+            tracking.state = "WATCHING"
 
         records.sort(key=lambda row: (row.signal_time, row.match_id))
         return records
@@ -726,45 +932,6 @@ class LiveLayerTwoMonitor:
         tracking.last_total_line = market.main_total_line
         tracking.last_over_odds = market.over_odds
 
-    def _evaluate_filters(
-        self, watch: WatchlistMatch, game_state: LiveGameState, market: MainTotalMarket
-    ) -> tuple[str, str | None]:
-        reject_reasons: list[str] = []
-
-        if not _is_trading_status(market.market_status):
-            reject_reasons.append("market_not_trading")
-
-        if market.seconds_since_reopen is not None and market.seconds_since_reopen < self.config.min_seconds_since_reopen:
-            return "cooling", "recent_reopen"
-
-        minute = game_state.minute
-        if minute is None:
-            reject_reasons.append("missing_minute")
-        elif minute < self.config.primary_minute_start or minute > self.config.primary_minute_end:
-            reject_reasons.append("minute_out_of_window")
-
-        if game_state.score_home is None or game_state.score_away is None:
-            reject_reasons.append("missing_score")
-        elif (game_state.score_home, game_state.score_away) not in self.config.allowed_scores:
-            reject_reasons.append("score_not_allowed")
-
-        if self.config.require_no_red_cards:
-            if game_state.red_home is None or game_state.red_away is None:
-                reject_reasons.append("missing_red_cards")
-            elif game_state.red_home > 0 or game_state.red_away > 0:
-                reject_reasons.append("red_card_present")
-
-        if market.line_jump_count_last_60s > self.config.max_line_jumps_last_60s:
-            reject_reasons.append("line_too_volatile")
-        if market.odds_jump_count_last_60s > self.config.max_odds_jumps_last_60s:
-            reject_reasons.append("odds_too_volatile")
-        if market.over_odds < self.config.min_over_odds:
-            reject_reasons.append("over_odds_too_low")
-
-        if reject_reasons:
-            return "rejected", ";".join(reject_reasons)
-        return "qualified", None
-
     def _build_signal_record(
         self,
         watch: WatchlistMatch,
@@ -773,10 +940,19 @@ class LiveLayerTwoMonitor:
         now: datetime,
         signal_status: str,
         reject_reason: str | None,
+        strategy_name: str,
+        bet_market_key: str,
+        bet_selection_key: str,
+        bet_handicap: float,
+        bet_price: float,
     ) -> LiveSignalRecord:
         quality_score = _quality_score(watch, game_state, market)
         confidence = _confidence_from_quality(quality_score)
-        signal = "TG125_LATE_FAVORITE_SIGNAL" if signal_status == "qualified" else "TG125_LATE_FAVORITE_WATCH"
+        signal = (
+            "TG125_LATE_FAVORITE_SIGNAL"
+            if strategy_name == "STRATEGY_A_OU"
+            else "DRAW_FAVORITE_AH075_SIGNAL"
+        )
 
         if signal_status == "qualified":
             action = "candidate_only"
@@ -798,7 +974,7 @@ class LiveLayerTwoMonitor:
             favorite_handicap_abs=watch.favorite_line_abs,
             pre_match_bucket=watch.pre_match_bucket,
             main_total_line=market.main_total_line,
-            over_odds=market.over_odds,
+            over_odds=bet_price,
             under_odds=market.under_odds,
             market_status=market.market_status,
             seconds_since_reopen=market.seconds_since_reopen,
@@ -811,4 +987,9 @@ class LiveLayerTwoMonitor:
             action=action,
             fav_odds_pre=watch.fav_odds_pre,
             dog_odds_pre=watch.dog_odds_pre,
+            strategy_name=strategy_name,
+            bet_market_key=bet_market_key,
+            bet_selection_key=bet_selection_key,
+            bet_handicap=bet_handicap,
+            bet_price=bet_price,
         )

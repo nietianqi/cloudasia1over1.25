@@ -24,6 +24,9 @@ class PreMatchWatchRecord:
     minutes_to_kickoff: float
     watchlist_flag: bool = True
     strategy_tag: str = "PRE_FAVORITE_DEEP_AH"
+    strategy_a_done: bool = False
+    strategy_b_done: bool = False
+    bet_done: bool = False
 
     def to_dict(self) -> dict:
         payload = asdict(self)

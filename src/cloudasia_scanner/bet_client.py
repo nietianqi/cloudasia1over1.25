@@ -155,17 +155,27 @@ class BetClient:
         now = datetime.now(timezone.utc)
         reference_id = str(uuid.uuid4())
         stake = stake_override if stake_override is not None else self.config.stake_per_bet
+        market_key = str(getattr(signal, "bet_market_key", "soccer.total_goals"))
+        selection_key = str(getattr(signal, "bet_selection_key", "over"))
+        try:
+            handicap_value = float(getattr(signal, "bet_handicap", signal.main_total_line))
+        except (TypeError, ValueError):
+            handicap_value = float(signal.main_total_line)
+        try:
+            requested_price = float(getattr(signal, "bet_price", signal.over_odds))
+        except (TypeError, ValueError):
+            requested_price = float(signal.over_odds)
 
         if not self.config.enabled:
             return BetRecord(
                 match_id=signal.match_id,
                 reference_id=reference_id,
                 event_id=signal.match_id,
-                market_key="soccer.total_goals",
-                selection_key="over",
-                handicap=str(signal.main_total_line),
+                market_key=market_key,
+                selection_key=selection_key,
+                handicap=str(handicap_value),
                 stake=stake,
-                requested_price=signal.over_odds,
+                requested_price=requested_price,
                 accepted_price=None,
                 status="SKIPPED_DISABLED",
                 rejection_reason="betting.enabled=false",
@@ -189,11 +199,11 @@ class BetClient:
                 match_id=signal.match_id,
                 reference_id=reference_id,
                 event_id=signal.match_id,
-                market_key="soccer.total_goals",
-                selection_key="over",
-                handicap=str(signal.main_total_line),
+                market_key=market_key,
+                selection_key=selection_key,
+                handicap=str(handicap_value),
                 stake=stake,
-                requested_price=signal.over_odds,
+                requested_price=requested_price,
                 accepted_price=None,
                 status="SKIPPED_ACK_REQUIRED",
                 rejection_reason=(
@@ -211,19 +221,19 @@ class BetClient:
                 dry_run=False,
             )
 
-        if signal.over_odds < self.config.min_accepted_price:
+        if requested_price < self.config.min_accepted_price:
             return BetRecord(
                 match_id=signal.match_id,
                 reference_id=reference_id,
                 event_id=signal.match_id,
-                market_key="soccer.total_goals",
-                selection_key="over",
-                handicap=str(signal.main_total_line),
+                market_key=market_key,
+                selection_key=selection_key,
+                handicap=str(handicap_value),
                 stake=stake,
-                requested_price=signal.over_odds,
+                requested_price=requested_price,
                 accepted_price=None,
                 status="SKIPPED_PRICE_TOO_LOW",
-                rejection_reason=f"over_odds={signal.over_odds} < min_accepted_price={self.config.min_accepted_price}",
+                rejection_reason=f"price={requested_price} < min_accepted_price={self.config.min_accepted_price}",
                 bet_time=now,
                 signal_quality=signal.quality_score,
                 home_team=signal.home_team,
@@ -238,11 +248,11 @@ class BetClient:
         body = {
             "referenceId": reference_id,
             "eventId": signal.match_id,
-            "marketKey": "soccer.total_goals",
-            "selectionKey": "over",
-            "handicap": str(signal.main_total_line),
+            "marketKey": market_key,
+            "selectionKey": selection_key,
+            "handicap": str(handicap_value),
             "stake": str(round(stake, 2)),
-            "price": str(round(signal.over_odds, 4)),
+            "price": str(round(requested_price, 4)),
             "currency": self.config.currency,
         }
 
@@ -252,12 +262,12 @@ class BetClient:
                 match_id=signal.match_id,
                 reference_id=reference_id,
                 event_id=signal.match_id,
-                market_key="soccer.total_goals",
-                selection_key="over",
-                handicap=str(signal.main_total_line),
+                market_key=market_key,
+                selection_key=selection_key,
+                handicap=str(handicap_value),
                 stake=stake,
-                requested_price=signal.over_odds,
-                accepted_price=signal.over_odds,
+                requested_price=requested_price,
+                accepted_price=requested_price,
                 status="DRY_RUN",
                 rejection_reason=None,
                 bet_time=now,
@@ -278,11 +288,11 @@ class BetClient:
                 match_id=signal.match_id,
                 reference_id=reference_id,
                 event_id=signal.match_id,
-                market_key="soccer.total_goals",
-                selection_key="over",
-                handicap=str(signal.main_total_line),
+                market_key=market_key,
+                selection_key=selection_key,
+                handicap=str(handicap_value),
                 stake=stake,
-                requested_price=signal.over_odds,
+                requested_price=requested_price,
                 accepted_price=None,
                 status="ERROR",
                 rejection_reason=str(exc),
@@ -312,11 +322,11 @@ class BetClient:
             match_id=signal.match_id,
             reference_id=reference_id,
             event_id=signal.match_id,
-            market_key="soccer.total_goals",
-            selection_key="over",
-            handicap=str(signal.main_total_line),
+            market_key=market_key,
+            selection_key=selection_key,
+            handicap=str(handicap_value),
             stake=stake,
-            requested_price=signal.over_odds,
+            requested_price=requested_price,
             accepted_price=accepted_price,
             status=status,
             rejection_reason=str(rejection_reason) if rejection_reason else None,

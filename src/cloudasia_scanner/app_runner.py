@@ -16,9 +16,6 @@ from .pipeline import PipelineConfig, PipelineRunner
 from .prematch_scan import PreMatchScanner, ScanConfig
 
 
-DEFAULT_ALLOWED_SCORES = {(0, 0), (1, 0), (0, 1)}
-
-
 def _ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
@@ -148,27 +145,6 @@ def _startup_preflight(
         )
 
 
-def _parse_allowed_scores(raw: Any) -> set[tuple[int, int]]:
-    if not isinstance(raw, list):
-        return set(DEFAULT_ALLOWED_SCORES)
-    parsed: set[tuple[int, int]] = set()
-    for item in raw:
-        if isinstance(item, str):
-            if ":" not in item:
-                continue
-            left, right = item.split(":", 1)
-            try:
-                parsed.add((int(left), int(right)))
-            except ValueError:
-                continue
-        elif isinstance(item, list) and len(item) == 2:
-            try:
-                parsed.add((int(item[0]), int(item[1])))
-            except (TypeError, ValueError):
-                continue
-    return parsed or set(DEFAULT_ALLOWED_SCORES)
-
-
 def _run_prematch(config: dict[str, Any], base_dir: Path, client: CloudbetClient) -> None:
     section = config.get("prematch", {}) if isinstance(config.get("prematch"), dict) else {}
     once = as_bool(section.get("once"), True)
@@ -207,17 +183,10 @@ def _run_live(config: dict[str, Any], base_dir: Path, client: CloudbetClient) ->
         raise ValueError(f"No valid watchlist rows in {watchlist_path}")
 
     output_path = resolve_path(base_dir, section.get("output"), default="data/live_signals.jsonl")
-    allowed_scores = _parse_allowed_scores(section.get("allowed_scores"))
-
     live_config = LiveMonitorConfig(
         trigger_total_line=as_float(section.get("trigger_total_line"), 1.25),
-        primary_minute_start=as_int(section.get("primary_minute_start"), 55),
-        primary_minute_end=as_int(section.get("primary_minute_end"), 72),
-        allowed_scores=allowed_scores,
-        min_seconds_since_reopen=as_float(section.get("min_seconds_since_reopen"), 20.0),
-        max_line_jumps_last_60s=as_int(section.get("max_line_jumps_last_60s"), 1),
-        max_odds_jumps_last_60s=as_int(section.get("max_odds_jumps_last_60s"), 3),
-        min_over_odds=as_float(section.get("min_over_odds"), 1.8),
+        strategy_b_line_threshold=as_float(section.get("strategy_b_line_threshold"), 0.75),
+        jump_window_seconds=as_int(section.get("jump_window_seconds"), 60),
         normal_poll_interval_seconds=as_int(section.get("normal_interval_seconds"), 15),
         fast_poll_interval_seconds=as_int(section.get("fast_interval_seconds"), 5),
         fast_poll_line_threshold=as_float(section.get("fast_line_threshold"), 1.75),
@@ -241,16 +210,10 @@ def _run_live(config: dict[str, Any], base_dir: Path, client: CloudbetClient) ->
 
 def _build_live_monitor(config: dict[str, Any], client: CloudbetClient) -> LiveLayerTwoMonitor:
     section = config.get("live", {}) if isinstance(config.get("live"), dict) else {}
-    allowed_scores = _parse_allowed_scores(section.get("allowed_scores"))
     live_config = LiveMonitorConfig(
         trigger_total_line=as_float(section.get("trigger_total_line"), 1.25),
-        primary_minute_start=as_int(section.get("primary_minute_start"), 55),
-        primary_minute_end=as_int(section.get("primary_minute_end"), 72),
-        allowed_scores=allowed_scores,
-        min_seconds_since_reopen=as_float(section.get("min_seconds_since_reopen"), 20.0),
-        max_line_jumps_last_60s=as_int(section.get("max_line_jumps_last_60s"), 1),
-        max_odds_jumps_last_60s=as_int(section.get("max_odds_jumps_last_60s"), 3),
-        min_over_odds=as_float(section.get("min_over_odds"), 1.8),
+        strategy_b_line_threshold=as_float(section.get("strategy_b_line_threshold"), 0.75),
+        jump_window_seconds=as_int(section.get("jump_window_seconds"), 60),
         normal_poll_interval_seconds=as_int(section.get("normal_interval_seconds"), 15),
         fast_poll_interval_seconds=as_int(section.get("fast_interval_seconds"), 5),
         fast_poll_line_threshold=as_float(section.get("fast_line_threshold"), 1.75),

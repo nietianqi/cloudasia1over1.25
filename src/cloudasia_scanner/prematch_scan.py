@@ -408,7 +408,7 @@ class PreMatchScanner:
                     continue
 
                 minutes_to_kickoff = (kickoff - scan_time).total_seconds() / 60.0
-                if minutes_to_kickoff < 0 or minutes_to_kickoff > self.config.minutes_to_kickoff_max:
+                if minutes_to_kickoff <= 0 or minutes_to_kickoff > self.config.minutes_to_kickoff_max:
                     continue
                 n_window += 1
 
