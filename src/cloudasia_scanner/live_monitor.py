@@ -125,6 +125,7 @@ class MatchTrackingState:
     line_last_change_ts: datetime | None = None
     odds_last_change_ts: datetime | None = None
     suspend_count: int = 0
+    last_diag: str = ""
 
 
 @dataclass(slots=True)
@@ -882,7 +883,33 @@ class LiveLayerTwoMonitor:
                             )
                             continue
 
+            # --- Diagnostic: record why neither strategy fired ---
+            diag_parts: list[str] = []
+            if watch.strategy_a_done:
+                diag_parts.append("A_done")
+            else:
+                if market.main_total_line > self.config.trigger_total_line:
+                    diag_parts.append(
+                        f"A_line={market.main_total_line:.2f}>trig={self.config.trigger_total_line:.2f}"
+                    )
+                elif not _is_trading_status(market.market_status):
+                    diag_parts.append(f"A_suspended({market.market_status})")
+            if watch.strategy_b_done:
+                diag_parts.append("B_done")
+            else:
+                score_str = (
+                    f"{game_state.score_home}:{game_state.score_away}"
+                    if game_state.score_home is not None and game_state.score_away is not None
+                    else "score_unknown"
+                )
+                if game_state.score_home is None or game_state.score_away is None:
+                    diag_parts.append("B_no_score")
+                elif game_state.score_home != game_state.score_away:
+                    diag_parts.append(f"B_not_draw({score_str})")
+                else:
+                    diag_parts.append(f"B_draw({score_str})_AH_no_trigger")
             tracking.state = "WATCHING"
+            tracking.last_diag = " | ".join(diag_parts) if diag_parts else "WATCHING"
 
         records.sort(key=lambda row: (row.signal_time, row.match_id))
         return records

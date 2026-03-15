@@ -220,10 +220,16 @@ class PipelineRunner:
 
             stake = self.money_manager.compute_stake(sig.bet_price, sig.quality_score)
             if stake <= 0:
+                # Compute Kelly edge manually for diagnostic log.
+                b = sig.bet_price - 1.0
+                p = self.money_manager._quality_to_win_prob(sig.quality_score)
+                edge = round(b * p - (1.0 - p), 4) if b > 0 else 0.0
                 print(
                     f"[{_ts()}] [BET SKIP] no positive edge"
-                    f"  match={sig.match_id} odds={sig.bet_price:.3f}"
-                    f"  quality={sig.quality_score:.1f}",
+                    f"  {sig.home_team} vs {sig.away_team}"
+                    f"  strategy={sig.strategy_name}"
+                    f"  odds={sig.bet_price:.3f} quality={sig.quality_score:.1f}"
+                    f"  win_rate_est={p:.3f} kelly_edge={edge:+.4f}",
                     flush=True,
                 )
                 continue
@@ -286,11 +292,13 @@ class PipelineRunner:
                     continue
                 line = "?" if state.last_total_line is None else f"{state.last_total_line:.2f}"
                 over = "?" if state.last_over_odds is None else f"{state.last_over_odds:.3f}"
+                diag = getattr(state, "last_diag", "")
                 print(
                     f"  -> {watch.home_team} vs {watch.away_team}"
-                    f"  TG={line} over={over}"
-                    f"  target={self.monitor.config.trigger_total_line:.2f}"
-                    f"  state={state.state}",
+                    f"  TG={line}(over={over})"
+                    f"  need_tg<={self.monitor.config.trigger_total_line:.2f}"
+                    f"  state={state.state}"
+                    + (f"  [{diag}]" if diag else ""),
                     flush=True,
                 )
 

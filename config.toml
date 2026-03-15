@@ -45,7 +45,7 @@ enabled = true
 dry_run = false
 stake_per_bet = 10.0
 currency = "USDT"
-min_accepted_price = 1.78
+min_accepted_price = 1.60
 max_active_bets = 3
 
 # Safety gate: live betting is blocked unless token equals phrase.
@@ -59,7 +59,10 @@ initial_bankroll = 500.0
 # ── Kelly 参数 ────────────────────────────────────────────────────────────────
 # FIX: 从 0.15 提高到 0.25，确保在常见赔率(1.80-1.95)下单注超过最低 5 USDT
 kelly_fraction = 0.25
-base_win_rate = 0.55
+# Strategy A (Over 1.25 on strong favorite late game) and Strategy B (AH -0.75 at draw)
+# are expected to win ~58%+ due to market underpricing late pressure from strong favorites.
+# Break-even at 0.58 win rate: need odds >= ~1.72 for positive Kelly.
+base_win_rate = 0.58
 min_win_rate = 0.50
 max_win_rate = 0.70
 quality_adjustment = 0.07
