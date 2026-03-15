@@ -13,8 +13,8 @@ base_url = "https://sports-api.cloudbet.com/pub/v2/odds"
 once = true
 interval_seconds = 60
 output = "data/watchlist.jsonl"
-# 只扫描开赛前 5 分钟内的比赛（0 < kickoff-now <= 300 秒）
-minutes_to_kickoff_max = 5
+# 提高候选池：扫描开赛前 120 分钟内的比赛（0 < kickoff-now <= 7200 秒）
+minutes_to_kickoff_max = 120
 min_favorite_line_abs = 1.0
 min_favorite_odds = 1.6
 verbose = true
@@ -26,12 +26,12 @@ output = "data/live_signals.jsonl"
 trigger_total_line = 1.25
 strategy_b_line_threshold = 0.75
 jump_window_seconds = 60
-normal_interval_seconds = 15
-fast_interval_seconds = 5
+normal_interval_seconds = 10
+fast_interval_seconds = 3
 fast_line_threshold = 1.75
 
 [pipeline]
-prematch_interval_seconds = 60
+prematch_interval_seconds = 30
 output_dir = "data"
 persist_watchlist = true
 persist_signals = true
@@ -46,7 +46,7 @@ dry_run = false
 stake_per_bet = 10.0
 currency = "USDT"
 min_accepted_price = 1.60
-max_active_bets = 3
+max_active_bets = 5
 
 # Safety gate: live betting is blocked unless token equals phrase.
 require_live_ack = true
@@ -91,7 +91,7 @@ max_drawdown_pct = 0.20
 max_concurrent_exposure_pct = 0.20
 # 连续亏损 5 次暂停（原 3 次太紧）
 max_consecutive_losses = 5
-max_daily_bets = 10
+max_daily_bets = 20
 # FIX: bet_cooldown_seconds 从 60 降到 15（赛事不会同时出信号，60 秒太保守）
 bet_cooldown_seconds = 15
 
